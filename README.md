@@ -25,7 +25,12 @@ not.
 2048¹² ≈ 5.4 × 10³⁹ combinations
 ```
 
-To put that number in human terms:
+(For the pedants: that's 132 bits of search space, **128 bits of real
+entropy** — the other 4 bits are a deterministic checksum. 24-word seeds
+give you the full 256 bits. Either way, you're nowhere near brute-force
+range. See [`docs/math.md`](docs/math.md#bits-of-what--how-256-bit-security-relates-to-bip-39).)
+
+To put `5.4 × 10³⁹` in human terms:
 
 > A burglar checking **one trillion seed phrases per second** since the
 > Big Bang would have completed **0.000_000_008%** of the search by now.
@@ -41,7 +46,9 @@ hardware that doesn't exist yet". See [`docs/math.md`](docs/math.md) for
 the full story with jokes — or, if you prefer video, 3Blue1Brown's
 [**How secure is 256 bit security?**](https://www.youtube.com/watch?v=S9JGmA5_unY)
 explains the same intuition with much better animations than any README
-could.
+could (and `docs/math.md` explains [how 256-bit security relates to
+BIP-39](docs/math.md#bits-of-what--how-256-bit-security-relates-to-bip-39)
+even though `seed-hunter` only tackles 12-word — 128-bit — seeds).
 
 This project exists so you can **watch a real brute-forcer running
 against the real Bitcoin network** and feel the impossibility in your

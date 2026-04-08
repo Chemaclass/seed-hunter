@@ -178,18 +178,57 @@ throughput, and it always reads in the order of `10²⁹` to `10³⁹` years.
 You can throw all the cores in the universe at it. You will not finish.
 That's not a limitation of the tool. That's BIP-39 working as designed.
 
+## "Bits of what?" — how 256-bit security relates to BIP-39
+
+You'll see "256-bit security" cited everywhere in cryptography (and in
+the 3Blue1Brown video below), and the obvious question is: a 12-word
+seed has `2048¹² = 2¹³²` combinations, so is BIP-39 "132-bit secure"?
+Or 128-bit? Or 256-bit? Three different numbers, and they're all real:
+
+| Number   | What it actually is                                                                | Applies to                                            |
+|----------|------------------------------------------------------------------------------------|-------------------------------------------------------|
+| **128**  | Real entropy in a 12-word mnemonic (4 of the 132 bits are checksum, deterministic) | 12-word seeds                                         |
+| **256**  | Real entropy in a 24-word mnemonic, AND the size of every secp256k1 private key    | 24-word seeds, raw EC keys                            |
+| 132 / 264| Search space of the *full* mnemonic *including* the deterministic checksum bits    | Naive brute-forcers that don't skip invalid checksums |
+
+A wallet's effective security is the **smaller** of (mnemonic entropy,
+private key size):
+
+- **12-word seed** → `min(128, 256) = 128` bits → ~`3.4 × 10³⁸` possibilities
+- **24-word seed** → `min(256, 256) = 256` bits → ~`1.16 × 10⁷⁷` possibilities
+
+The 12-word case leaves 128 bits of the 256-bit private-key space
+*unused*, because BIP-32 derivation is deterministic — guessing the
+seed is no harder than guessing the entropy that produced it.
+
+`seed-hunter` iterates **12-word** seeds, so the directly-relevant
+number is **2¹²⁸**, not 2²⁵⁶. That matters for the headline math but
+**not for the security conclusion**: both 2¹²⁸ and 2²⁵⁶ are already
+past the thermodynamic ceiling. Landauer's limit forbids the search at
+either size, the patient burglar is stuck at 0.000_000_008%-of-1% in
+either case, and the intuition transfers cleanly past about 2¹⁰⁰.
+
+> If 256-bit security is unbreakable, 128-bit security is also
+> unbreakable. The gap between them is itself ~2¹²⁸ — a number larger
+> than the count of atoms in your body squared — but both numbers are on
+> the same side of the impossibility line. Decimal places, not
+> categories.
+
 ## Further reading (and watching)
 
 If you'd rather *see* this kind of math than read it, watch
 [**3Blue1Brown — How secure is 256 bit security?**](https://www.youtube.com/watch?v=S9JGmA5_unY).
 It walks through the same intuition with much better animations than any
-text document could pull off, with concrete "what if every computer ever
-built worked together" thought experiments. The video is about a 256-bit
-keyspace specifically (the size of an ECDSA private key), but the
-intuition applies directly to BIP-39's 132-bit seed entropy: both are
-large enough that the universe runs out before the search does, and the
-gap between "huge" and "actually unbreakable" is much smaller than most
-people think.
+text document could pull off, including concrete "what if every computer
+ever built worked together" thought experiments.
+
+The video targets 2²⁵⁶ specifically — directly applicable to **24-word**
+BIP-39 seeds and to the secp256k1 private key Bitcoin uses under the
+hood. For the 12-word seeds `seed-hunter` iterates, the relevant number
+is the smaller 2¹²⁸, but as the table above shows: same physical
+impossibility, just with a few decimal places of headroom subtracted.
+The video's argument is **a fortiori** valid for our case — if 256 bits
+is unbreakable, 128 bits is unbreakable too.
 
 After watching the video and then watching `seed-hunter`'s walk-mode
 cursor crawl for a few minutes, the lesson lands twice: once in your

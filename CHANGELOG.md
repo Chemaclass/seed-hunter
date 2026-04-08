@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/math.md`** and the README now point at 3Blue1Brown's
   [_How secure is 256 bit security?_](https://www.youtube.com/watch?v=S9JGmA5_unY)
   as the canonical visual explainer for the same intuition.
+- **`docs/math.md`** gained a new "Bits of what?" section that
+  disentangles the three numbers (128-bit mnemonic entropy, 256-bit
+  secp256k1 private key, 132-bit raw search space including the
+  deterministic checksum) and explains why a 12-word seed is "only"
+  128-bit secure but the 3Blue1Brown video's 2²⁵⁶ argument applies *a
+  fortiori*. The README's "Why" section now correctly distinguishes
+  between the 132-bit search space and the 128 bits of real entropy.
 
 ## [0.1.0] - 2026-04-08
 
