@@ -1,0 +1,29 @@
+# Binaries
+seed-hunter
+/seed-hunter
+*.exe
+*.test
+*.out
+
+# Databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Coverage
+coverage.out
+coverage.html
+
+# Environment
+.env
+.env.local
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+.claude/
+
+# Distribution
+dist/
