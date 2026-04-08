@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure between commit and push, automatically rolls back the local
   commit and tag so the working tree is restored.
 
+### Changed
+
+- **README and `docs/math.md`** rewritten to make the impossibility of
+  brute-forcing a BIP-39 seed phrase visceral for non-technical readers.
+  New sections include "The patient burglar" (a trillion guesses per
+  second since the Big Bang would be at 0.000_000_008% of the search),
+  "But what about quantum computers?" (Grover gives 2⁶⁶, still galaxies
+  of ridiculous), "But what about a superintelligent AI?" (Landauer's
+  limit forbids the bit-flips no matter how smart the attacker is), and
+  a friendly reminder that "the second law of thermodynamics doesn't
+  care how smart you are". `docs/privacy.md` gains a callout explaining
+  that the only secret stored is an unfunded demo mnemonic.
+
 ## [0.1.0] - 2026-04-08
 
 The first stable release of `seed-hunter` — an educational Go CLI that

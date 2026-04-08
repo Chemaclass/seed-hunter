@@ -1,5 +1,14 @@
 # Privacy
 
+> **Important context:** the only "secret" `seed-hunter` ever stores is
+> an **auto-generated demo mnemonic** that has never been funded, never
+> will be funded, and is also printed to your terminal on the first run.
+> It is not a real wallet seed. The whole point of the project is that
+> brute-forcing a real seed is [thermodynamically forbidden](math.md) —
+> not "hard", actually *forbidden*. So even if the demo mnemonic
+> "leaked", attacking it would still take longer than the heat death of
+> the universe and find an empty wallet at the end.
+
 `seed-hunter` makes a deliberate trade-off: the high-volume per-attempt
 data is hash-only, but the much smaller per-session metadata stores the
 in-flight template in plaintext to keep the resume UX zero-friction.

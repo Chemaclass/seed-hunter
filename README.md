@@ -7,25 +7,46 @@
 > tool, **not** a hacking tool, and **not** a way to "get back" funds
 > from someone else's seed. Do not point it at addresses you do not own.
 > Be a polite citizen of the open Bitcoin infrastructure.
+>
+> The whole point of this project is that **it does not work**, and that
+> **it cannot work**, no matter how clever you are. Watch it run for ten
+> minutes and you will understand why nobody is going to brute-force
+> your wallet — not today, not in a thousand years, not with quantum
+> computers, not with an AI ten thousand times smarter than today.
+> Not ever. The math is on your side.
 
 ## Why
 
-Bitcoin wallets are protected by a single 12-word seed phrase chosen from
-the [BIP-39 wordlist](https://github.com/bitcoin/bips/tree/master/bip-0039)
-of 2048 words. There are
+Bitcoin wallets are protected by a single 12-word seed phrase. Twelve
+words from a list of 2048. People hear that and think *"guessable"*. It is
+not.
 
 ```
 2048¹² ≈ 5.4 × 10³⁹ combinations
 ```
 
-…which is more than the number of atoms in a human body raised to the
-power of itself. People hear "12 words" and think it sounds *guessable*.
-This project lets you **try to guess one**, watch the dashboard tick away,
-and feel the impossibility in real time. The educational message is in the
-`ETA full key` line: even a hand-tuned brute-forcer running on 10 cores at
-hundreds of attempts per second projects an ETA in the order of **10²⁹
-years** to walk the keyspace. Read [the math](docs/math.md) for the
-comparisons.
+To put that number in human terms:
+
+> A burglar checking **one trillion seed phrases per second** since the
+> Big Bang would have completed **0.000_000_008%** of the search by now.
+> The Sun will swallow the Earth before they get to 1% of 1% of 1%.
+
+It is **not** that we don't have fast enough computers. It is that the
+laws of thermodynamics forbid the search. Even an AI 10¹⁰⁰ × smarter
+than today, running on every atom in the observable universe, hits a
+hard floor called **Landauer's limit** and cannot afford the
+bit-flips. Quantum computers don't save you either: Grover's algorithm
+brings the cost down to ~2⁶⁶, which is *still* "millions of years on
+hardware that doesn't exist yet". See [`docs/math.md`](docs/math.md) for
+the full story with jokes.
+
+This project exists so you can **watch a real brute-forcer running
+against the real Bitcoin network** and feel the impossibility in your
+gut. The dashboard's `ETA full key` line is always honest about your
+current throughput, and it always reads in the order of `10²⁹` to `10³⁹`
+years. The educational message is not the README — it's the dashboard
+ticking, the cursor crawling, and the realisation that **you are
+watching it not happen**.
 
 ## How
 
