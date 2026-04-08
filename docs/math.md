@@ -177,3 +177,20 @@ throughput, and it always reads in the order of `10²⁹` to `10³⁹` years.
 
 You can throw all the cores in the universe at it. You will not finish.
 That's not a limitation of the tool. That's BIP-39 working as designed.
+
+## Further reading (and watching)
+
+If you'd rather *see* this kind of math than read it, watch
+[**3Blue1Brown — How secure is 256 bit security?**](https://www.youtube.com/watch?v=S9JGmA5_unY).
+It walks through the same intuition with much better animations than any
+text document could pull off, with concrete "what if every computer ever
+built worked together" thought experiments. The video is about a 256-bit
+keyspace specifically (the size of an ECDSA private key), but the
+intuition applies directly to BIP-39's 132-bit seed entropy: both are
+large enough that the universe runs out before the search does, and the
+gap between "huge" and "actually unbreakable" is much smaller than most
+people think.
+
+After watching the video and then watching `seed-hunter`'s walk-mode
+cursor crawl for a few minutes, the lesson lands twice: once in your
+head, once in your gut.

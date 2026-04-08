@@ -38,7 +38,10 @@ hard floor called **Landauer's limit** and cannot afford the
 bit-flips. Quantum computers don't save you either: Grover's algorithm
 brings the cost down to ~2⁶⁶, which is *still* "millions of years on
 hardware that doesn't exist yet". See [`docs/math.md`](docs/math.md) for
-the full story with jokes.
+the full story with jokes — or, if you prefer video, 3Blue1Brown's
+[**How secure is 256 bit security?**](https://www.youtube.com/watch?v=S9JGmA5_unY)
+explains the same intuition with much better animations than any README
+could.
 
 This project exists so you can **watch a real brute-forcer running
 against the real Bitcoin network** and feel the impossibility in your

@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a friendly reminder that "the second law of thermodynamics doesn't
   care how smart you are". `docs/privacy.md` gains a callout explaining
   that the only secret stored is an unfunded demo mnemonic.
+- **`docs/math.md`** and the README now point at 3Blue1Brown's
+  [_How secure is 256 bit security?_](https://www.youtube.com/watch?v=S9JGmA5_unY)
+  as the canonical visual explainer for the same intuition.
 
 ## [0.1.0] - 2026-04-08
 
