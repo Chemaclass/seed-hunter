@@ -27,7 +27,7 @@ Imagine a burglar who checks one trillion seed phrases per second
 (`10¹²` candidates per second, about a billion times faster than this
 educational tool). They started the moment the Big Bang happened, 13.8
 billion years ago, and they've been working uninterrupted ever since.
-No breaks, no holidays, no Y2K.
+No breaks, no holidays, no sleep.
 
 How far have they got?
 
