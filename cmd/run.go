@@ -69,6 +69,8 @@ func init() {
 	f.IntVar(&runFlags.BatchSize, "batch-size", runFlags.BatchSize, "SQLite insert batch size")
 	f.BoolVar(&runFlags.Reset, "reset", false, "ignore the most recent paused session and start a brand-new one")
 	f.BoolVar(&runFlags.NoDashboard, "no-dashboard", false, "disable the live dashboard (useful for non-TTY use)")
+	f.BoolVar(&runFlags.NoWalk, "no-walk", false, "stop after the 12-position sweep; do NOT auto-transition to the full keyspace walk")
+	f.BoolVar(&runFlags.SkipSweep, "skip-sweep", false, "skip the 12-position sweep and go straight to the full keyspace walk")
 }
 
 func runE(cmd *cobra.Command, _ []string) error {
@@ -86,6 +88,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 	defer stop()
 
 	inheritedPosition := -1
+	resumeWalk := false
 	if !cfg.Reset {
 		last, err := repo.LatestResumable(ctx)
 		if err != nil {
@@ -93,11 +96,22 @@ func runE(cmd *cobra.Command, _ []string) error {
 		}
 		if last != nil {
 			inheritFromSession(&cfg, last, cmd.Flags())
-			inheritedPosition = last.Position
-			fmt.Fprintf(cmd.OutOrStdout(),
-				"Resuming session #%d at position %d, word index %d (use --reset to start over).\n",
-				last.ID, last.Position, last.LastWordIndex+1,
-			)
+			if last.Mode == storage.ModeWalk {
+				// The latest paused session is a walk; jump straight to
+				// walk mode and skip the sweep entirely. The walker will
+				// itself find and resume the cursor.
+				resumeWalk = true
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"Resuming walk session #%d at cursor %s (use --reset to start over).\n",
+					last.ID, last.Cursor,
+				)
+			} else {
+				inheritedPosition = last.Position
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"Resuming sweep session #%d at position %d, word index %d (use --reset to start over).\n",
+					last.ID, last.Position, last.LastWordIndex+1,
+				)
+			}
 		}
 	}
 
@@ -121,11 +135,6 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("build iterator: %w", err)
 	}
 
-	template, err := resolveTemplate(cfg.Template, cmd.OutOrStdout(), generateRandomMnemonic)
-	if err != nil {
-		return err
-	}
-
 	workers := cfg.Workers // validated >= 1 above
 
 	baseChecker, err := checker.New(checker.Provider(cfg.API), &http.Client{Timeout: 15 * time.Second})
@@ -133,11 +142,32 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("build checker: %w", err)
 	}
 	rateLimited := checker.WithRateLimit(baseChecker, cfg.Rate)
+	deriver := derivation.New()
+
+	// If we're going straight into walk mode (resuming a walk session, or
+	// the user passed --skip-sweep), skip template generation and the
+	// sweep wiring entirely. The walker doesn't use a template.
+	walkOnly := resumeWalk || cfg.SkipSweep
+	if walkOnly {
+		slog.Info("starting walk",
+			"api", cfg.API,
+			"script_type", cfg.ScriptType,
+			"addresses", cfg.NAddresses,
+			"rate", cfg.Rate,
+			"reset", cfg.Reset,
+		)
+		return runWalk(ctx, cmd.OutOrStdout(), cfg, words, repo, deriver, rateLimited, !cfg.NoDashboard)
+	}
+
+	template, err := resolveTemplate(cfg.Template, cmd.OutOrStdout(), generateRandomMnemonic)
+	if err != nil {
+		return err
+	}
 
 	deps := pipeline.Dependencies{
 		Repository: repo,
 		Iterator:   iterator,
-		Deriver:    derivation.New(),
+		Deriver:    deriver,
 		Checker:    rateLimited,
 	}
 
@@ -200,66 +230,140 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return res, err
 	}
 
-	return sweepPositions(ctx, cmd.OutOrStdout(), positions, startIdx, runOne)
+	out := cmd.OutOrStdout()
+
+	// Run the sweep first.
+	swept, err := sweepPositionsAndReport(ctx, out, positions, startIdx, runOne)
+	if err != nil {
+		return err
+	}
+
+	// After a successful sweep that ran to completion (not paused, not
+	// cancelled, not error), automatically transition into the keyspace
+	// walk unless --no-walk was set.
+	if swept == sweepCompleted && !cfg.NoWalk && ctx.Err() == nil {
+		fmt.Fprintln(out, "\n──── full keyspace walk ────")
+		fmt.Fprintln(out, "Sweep done. Continuing into the full 2048^12 keyspace walk.")
+		fmt.Fprintln(out, "This will not finish in the lifetime of the universe. Press Ctrl+C any time.")
+		return runWalk(ctx, out, cfg, words, repo, deriver, rateLimited, !cfg.NoDashboard)
+	}
+	return nil
 }
 
-// runOneFn is the per-position pipeline runner. sweepPositions calls it
-// once per position in the swept list. It is parameterised so the test for
-// sweepPositions can pass a deterministic stub instead of a real pipeline.
-type runOneFn func(ctx context.Context, position int) (pipeline.Result, error)
+// sweepOutcome reports how sweepPositionsAndReport finished, so the caller
+// can decide whether to transition into the walk.
+type sweepOutcome int
 
-// sweepPositions runs runOne for each position in positions[startIdx:], in
-// order. It honors:
-//
-//   - context cancellation: aborts the sweep without error
-//   - status=paused (Ctrl+C inside a position): aborts the sweep without error
-//   - status=completed: prints a per-position summary and continues
-//
-// When all positions in the slice complete, it prints a final "all
-// positions exhausted" summary. Any error from runOne is returned wrapped.
-func sweepPositions(ctx context.Context, out io.Writer, positions []int, startIdx int, runOne runOneFn) error {
+const (
+	sweepCompleted sweepOutcome = iota // every position completed
+	sweepPaused                        // a position paused (Ctrl+C)
+	sweepNoWork                        // startIdx was past the end (nothing to do)
+)
+
+// sweepPositionsAndReport is a thin wrapper around sweepPositions that
+// also tells the caller whether the sweep ran to natural completion (so
+// that runE knows whether to chain into the keyspace walk).
+func sweepPositionsAndReport(ctx context.Context, out io.Writer, positions []int, startIdx int, runOne runOneFn) (sweepOutcome, error) {
 	if startIdx < 0 {
 		startIdx = 0
 	}
 	if startIdx >= len(positions) {
 		fmt.Fprintln(out, "nothing to sweep: starting index is past the end of the positions list")
-		return nil
+		return sweepNoWork, nil
 	}
-
 	for i := startIdx; i < len(positions); i++ {
 		if err := ctx.Err(); err != nil {
-			return nil
+			return sweepPaused, nil
 		}
 		pos := positions[i]
 		fmt.Fprintf(out, "\n──── position %d (%d/%d) ────\n", pos, i+1, len(positions))
-
 		res, err := runOne(ctx, pos)
 		if err != nil {
-			return fmt.Errorf("position %d: %w", pos, err)
+			return sweepPaused, fmt.Errorf("position %d: %w", pos, err)
 		}
-
 		fmt.Fprintf(out,
 			"position %d: status=%s session=%d end_index=%d resumed=%t cancelled=%t\n",
 			pos, res.FinalStatus, res.SessionID, res.EndIndex, res.WasResumed, res.WasCancelled,
 		)
-
 		if res.FinalStatus == storage.StatusPaused {
 			fmt.Fprintln(out,
 				"\nPosition paused. Run 'seed-hunter run' (no flags) to resume from where this stopped.")
-			return nil
+			return sweepPaused, nil
 		}
 	}
-
 	fmt.Fprintf(out,
 		"\nSweep complete: %d positions × 2048 = %d candidates exhausted.\n",
 		len(positions)-startIdx, (len(positions)-startIdx)*2048,
 	)
-	fmt.Fprintln(out,
-		"Reminder: this is 12 × 2048 = 24,576 attempts at most. The actual BIP-39")
-	fmt.Fprintln(out,
-		"keyspace is 2048^12 ≈ 5.4e+39. We just covered an infinitesimal slice.")
+	return sweepCompleted, nil
+}
+
+// runWalk runs the full-keyspace walker with its own dashboard goroutine.
+// It is called either as the next phase after a successful sweep or
+// directly when --skip-sweep is set or the resumed session is a walk.
+func runWalk(
+	ctx context.Context,
+	out io.Writer,
+	cfg config.Config,
+	words []string,
+	repo *storage.Repository,
+	deriver pipeline.Deriver,
+	chk pipeline.Checker,
+	withDashboard bool,
+) error {
+	stats := pipeline.NewStats()
+	var dashCancel context.CancelFunc = func() {}
+	if withDashboard {
+		dashCtx, c := context.WithCancel(ctx)
+		dashCancel = c
+		go dashboard.Run(dashCtx, out, dashboard.Meta{
+			Mode:       dashboard.ModeWalk,
+			API:        cfg.API,
+			ScriptType: cfg.ScriptType,
+			Workers:    cfg.Workers,
+			APIWorkers: cfg.APIWorkers,
+			RateLimit:  cfg.Rate,
+			NAddresses: cfg.NAddresses,
+		}, stats, 200*time.Millisecond)
+	}
+
+	walkCfg := pipeline.WalkConfig{
+		Words:        words,
+		NAddresses:   cfg.NAddresses,
+		ScriptType:   derivation.ScriptType(cfg.ScriptType),
+		API:          cfg.API,
+		Rate:         cfg.Rate,
+		WordlistPath: cfg.WordlistPath,
+		BatchSize:    cfg.BatchSize,
+		Fresh:        cfg.Reset,
+	}
+	res, err := pipeline.Walk(ctx, walkCfg, pipeline.WalkDependencies{
+		Repository: repo,
+		Deriver:    deriver,
+		Checker:    chk,
+	}, stats)
+	dashCancel()
+	time.Sleep(50 * time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("walk: %w", err)
+	}
+
+	fmt.Fprintln(out)
+	fmt.Fprintf(out,
+		"walk %s: session=%d processed=%d cursor=%s\n",
+		res.FinalStatus, res.SessionID, res.Processed, res.EndCursor,
+	)
+	if res.FinalStatus == storage.StatusPaused {
+		fmt.Fprintln(out,
+			"Walk paused. Run 'seed-hunter run' (no flags) to resume from where this stopped.")
+	}
 	return nil
 }
+
+// runOneFn is the per-position pipeline runner. sweepPositionsAndReport
+// calls it once per position. It is parameterised so the test can pass a
+// deterministic stub instead of a real pipeline.
+type runOneFn func(ctx context.Context, position int) (pipeline.Result, error)
 
 // startIndexInPositions returns the index of `current` in `positions`, or
 // 0 if `current` is not in the list (start at the head). A negative

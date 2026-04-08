@@ -250,8 +250,12 @@ func TestSweepPositionsVisitsEveryPositionInOrder(t *testing.T) {
 		return pipeline.Result{FinalStatus: storage.StatusCompleted, EndIndex: 2047}, nil
 	}
 	var out bytes.Buffer
-	if err := sweepPositions(context.Background(), &out, []int{0, 3, 5, 9}, 0, runOne); err != nil {
-		t.Fatalf("sweepPositions: %v", err)
+	outcome, err := sweepPositionsAndReport(context.Background(), &out, []int{0, 3, 5, 9}, 0, runOne)
+	if err != nil {
+		t.Fatalf("sweepPositionsAndReport: %v", err)
+	}
+	if outcome != sweepCompleted {
+		t.Errorf("outcome: want sweepCompleted, got %v", outcome)
 	}
 	want := []int{0, 3, 5, 9}
 	if len(visited) != len(want) {
@@ -275,8 +279,12 @@ func TestSweepPositionsHonorsStartIdx(t *testing.T) {
 		return pipeline.Result{FinalStatus: storage.StatusCompleted}, nil
 	}
 	var out bytes.Buffer
-	if err := sweepPositions(context.Background(), &out, []int{0, 1, 2, 3}, 2, runOne); err != nil {
-		t.Fatalf("sweepPositions: %v", err)
+	outcome, err := sweepPositionsAndReport(context.Background(), &out, []int{0, 1, 2, 3}, 2, runOne)
+	if err != nil {
+		t.Fatalf("sweepPositionsAndReport: %v", err)
+	}
+	if outcome != sweepCompleted {
+		t.Errorf("outcome: want sweepCompleted, got %v", outcome)
 	}
 	want := []int{2, 3}
 	if len(visited) != len(want) || visited[0] != 2 || visited[1] != 3 {
@@ -292,8 +300,12 @@ func TestSweepPositionsStopsOnPaused(t *testing.T) {
 		return pipeline.Result{FinalStatus: storage.StatusPaused, EndIndex: 137}, nil
 	}
 	var out bytes.Buffer
-	if err := sweepPositions(context.Background(), &out, []int{0, 1, 2}, 0, runOne); err != nil {
-		t.Fatalf("sweepPositions: %v", err)
+	outcome, err := sweepPositionsAndReport(context.Background(), &out, []int{0, 1, 2}, 0, runOne)
+	if err != nil {
+		t.Fatalf("sweepPositionsAndReport: %v", err)
+	}
+	if outcome != sweepPaused {
+		t.Errorf("outcome: want sweepPaused, got %v", outcome)
 	}
 	if len(visited) != 1 || visited[0] != 0 {
 		t.Errorf("paused result should stop sweep at first visited position, got %v", visited)
@@ -312,8 +324,12 @@ func TestSweepPositionsStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel BEFORE starting
 	var out bytes.Buffer
-	if err := sweepPositions(ctx, &out, []int{0, 1, 2}, 0, runOne); err != nil {
-		t.Fatalf("sweepPositions: %v", err)
+	outcome, err := sweepPositionsAndReport(ctx, &out, []int{0, 1, 2}, 0, runOne)
+	if err != nil {
+		t.Fatalf("sweepPositionsAndReport: %v", err)
+	}
+	if outcome != sweepPaused {
+		t.Errorf("outcome: want sweepPaused after ctx cancel, got %v", outcome)
 	}
 	if len(visited) != 0 {
 		t.Errorf("cancelled ctx should prevent any visits, got %v", visited)
@@ -326,7 +342,7 @@ func TestSweepPositionsPropagatesRunOneError(t *testing.T) {
 		return pipeline.Result{}, bang
 	}
 	var out bytes.Buffer
-	err := sweepPositions(context.Background(), &out, []int{0}, 0, runOne)
+	_, err := sweepPositionsAndReport(context.Background(), &out, []int{0}, 0, runOne)
 	if err == nil {
 		t.Fatal("expected wrapped error")
 	}
@@ -342,8 +358,12 @@ func TestSweepPositionsHandlesStartIdxPastEnd(t *testing.T) {
 		return pipeline.Result{FinalStatus: storage.StatusCompleted}, nil
 	}
 	var out bytes.Buffer
-	if err := sweepPositions(context.Background(), &out, []int{0, 1}, 5, runOne); err != nil {
-		t.Fatalf("sweepPositions: %v", err)
+	outcome, err := sweepPositionsAndReport(context.Background(), &out, []int{0, 1}, 5, runOne)
+	if err != nil {
+		t.Fatalf("sweepPositionsAndReport: %v", err)
+	}
+	if outcome != sweepNoWork {
+		t.Errorf("outcome: want sweepNoWork, got %v", outcome)
 	}
 	if len(visited) != 0 {
 		t.Errorf("startIdx past end should yield no visits, got %v", visited)

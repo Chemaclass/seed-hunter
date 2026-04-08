@@ -40,14 +40,27 @@ const placeholder = "—"
 // Run to repaint the frame in place.
 const clearScreen = "\033[H\033[2J"
 
+// Mode tells the renderer which dashboard layout to draw.
+type Mode int
+
+const (
+	// ModeSweep is the default per-position 2048-candidate progress bar.
+	ModeSweep Mode = iota
+	// ModeWalk is the full-keyspace walker, where the denominator is
+	// 2048^12 and the per-position attempts counter is replaced with the
+	// raw cursor and an absolute counter.
+	ModeWalk
+)
+
 // Meta carries the static metadata that is rendered above the live
 // counters. It is supplied once before the run begins and does not change
 // across frames. (SessionID and ResumedAt are NOT here — they are populated
 // by the pipeline after BeginSession runs and are read from *pipeline.Stats
 // at frame time.)
 type Meta struct {
+	Mode         Mode
 	TemplateHash string // already hashed; the dashboard never sees plaintext words
-	Position     int
+	Position     int    // sweep mode only
 	API          string
 	ScriptType   string // "segwit" or "legacy"
 	Workers      int    // parallel deriver goroutines
@@ -56,14 +69,24 @@ type Meta struct {
 	NAddresses   int
 }
 
+// keyspaceTotal is the full BIP-39 12-word keyspace size, 2048^12. Walk
+// mode uses it as the denominator for the progress bar.
+const keyspaceTotal = keyspaceCombinations
+
 // Frame is a single rendered snapshot of the dashboard. Render consumes a
 // Frame and returns the corresponding text block; Run builds a Frame from a
 // *pipeline.Stats on every tick.
+//
+// In ModeWalk, Cursor is the latest 12-int cursor as a comma-separated
+// string (e.g. "0,0,0,0,0,0,0,0,0,0,0,42") and Processed is the absolute
+// number of candidates the walker has tried in this run. ResumedAt has no
+// meaning in walk mode.
 type Frame struct {
 	Meta           Meta
 	SessionID      int64
 	Resumed        bool
-	ResumedAt      int // word index this run picked up at, -1 if fresh
+	ResumedAt      int // sweep mode only; word index this run picked up at, -1 if fresh
+	Cursor         string
 	Processed      int64
 	ValidMnemonics int64
 	Hits           int64
@@ -74,7 +97,15 @@ type Frame struct {
 // Render returns the multi-line text frame for f. It does not include any
 // terminal control sequences; the caller is responsible for clearing the
 // screen between frames. Render is pure: same input, same output.
+//
+// The Mode field on f.Meta switches between the per-position sweep layout
+// and the full-keyspace walk layout. Sweep mode shows attempts vs the
+// 2048-candidate position keyspace; walk mode shows the cursor and the
+// absolute counter against 2048^12.
 func Render(f Frame) string {
+	if f.Meta.Mode == ModeWalk {
+		return renderWalk(f)
+	}
 	var b strings.Builder
 
 	// Header.
@@ -148,6 +179,55 @@ func Render(f Frame) string {
 	return b.String()
 }
 
+// renderWalk renders the full-keyspace walk dashboard. The denominator is
+// 2048^12 ≈ 5.4e+39, the per-position progress bar is replaced with the
+// raw cursor and an absolute counter, and the ETA line becomes the
+// LITERAL projected wall time to walk the full keyspace at the current
+// rate (not a hypothetical comparison).
+func renderWalk(f Frame) string {
+	var b strings.Builder
+
+	b.WriteString("seed-hunter — full BIP-39 keyspace walk\n")
+	b.WriteString("───────────────────────────────────────\n")
+
+	sessionLabel := fmt.Sprintf("session #%d", f.SessionID)
+	if f.Resumed {
+		sessionLabel += " (resumed)"
+	}
+	fmt.Fprintf(&b, "%-34s api      : %s\n", sessionLabel, f.Meta.API)
+	fmt.Fprintf(&b, "mode          : %-20s script   : %s\n", "walk", f.Meta.ScriptType)
+	fmt.Fprintf(&b, "rate limit    : %.2f req/s          addresses/candidate : %d\n",
+		f.Meta.RateLimit, f.Meta.NAddresses)
+	b.WriteString("\n")
+
+	cursorDisplay := f.Cursor
+	if cursorDisplay == "" {
+		cursorDisplay = "0,0,0,0,0,0,0,0,0,0,0,0"
+	}
+	fmt.Fprintf(&b, "cursor        : %s\n", cursorDisplay)
+	fmt.Fprintf(&b, "attempts      : %d / 5.4e+39          (≈ 0%% of the keyspace)\n", f.Processed)
+	fmt.Fprintf(&b, "valid mnem    : %d\n", f.ValidMnemonics)
+	fmt.Fprintf(&b, "hits          : %d\n", f.Hits)
+	fmt.Fprintf(&b, "errors        : %d\n", f.Errors)
+	fmt.Fprintf(&b, "elapsed       : %s\n", formatDuration(f.Elapsed))
+
+	rate := computeRate(f.Processed, f.Elapsed)
+	if rate > 0 && !math.IsInf(rate, 0) && !math.IsNaN(rate) {
+		fmt.Fprintf(&b, "rate          : %.2f attempts/s\n", rate)
+		years := keyspaceTotal / rate / secondsPerYear
+		fmt.Fprintf(&b, "ETA full key  : %.1e years\n", years)
+	} else {
+		fmt.Fprintf(&b, "rate          : %s attempts/s\n", placeholder)
+		fmt.Fprintf(&b, "ETA full key  : %s years\n", placeholder)
+	}
+
+	b.WriteString("\n")
+	b.WriteString("This walk will not finish in the lifetime of the universe.\n")
+	b.WriteString("That is the entire point. Press Ctrl+C any time.\n")
+
+	return b.String()
+}
+
 // Run periodically reads s and meta, renders a frame, and writes it to w
 // after a cursor-home + clear-screen sequence. It returns when ctx is
 // cancelled. interval controls the repaint cadence (e.g. 200ms).
@@ -182,14 +262,20 @@ func paint(w io.Writer, meta Meta, s *pipeline.Stats) {
 
 // snapshot copies the atomic counters and the fixed fields from s into a
 // Frame. The resumed flag is derived from the ResumedAt sentinel (-1 means
-// fresh run).
+// fresh run). In walk mode, the live Cursor is also copied so the
+// dashboard can render the current keyspace position.
 func snapshot(meta Meta, s *pipeline.Stats) Frame {
 	resumedAt := int(s.ResumedAt.Load())
+	var cursor string
+	if p := s.Cursor.Load(); p != nil {
+		cursor = *p
+	}
 	return Frame{
 		Meta:           meta,
 		SessionID:      s.SessionID.Load(),
 		Resumed:        resumedAt >= 0,
 		ResumedAt:      resumedAt,
+		Cursor:         cursor,
 		Processed:      s.Processed.Load(),
 		ValidMnemonics: s.ValidMnemonics.Load(),
 		Hits:           s.Hits.Load(),

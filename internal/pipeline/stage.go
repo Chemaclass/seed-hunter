@@ -42,10 +42,15 @@ type Checked struct {
 // Stats is the live counter snapshot the dashboard reads while a run is in
 // flight. All mutable fields are atomic so the dashboard goroutine can read
 // them without coordinating with the pipeline.
+//
+// Cursor is set only by Walk (the keyspace walker); it holds the latest
+// 12-int cursor as a comma-separated string. The dashboard reads it on
+// each tick to display the live position in the keyspace.
 type Stats struct {
 	SessionID atomic.Int64
 	ResumedAt atomic.Int64 // word index the current run picked up at; -1 if fresh
-	StartedAt time.Time    // set once before the run starts; immutable after
+	Cursor    atomic.Pointer[string]
+	StartedAt time.Time // set once before the run starts; immutable after
 
 	Processed      atomic.Int64 // candidates processed in THIS run
 	ValidMnemonics atomic.Int64

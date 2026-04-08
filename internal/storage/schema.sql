@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     wordlist_path   TEXT    NOT NULL DEFAULT '',
     workers         INTEGER NOT NULL DEFAULT 1,
     positions_spec  TEXT    NOT NULL DEFAULT '',
+    mode            TEXT    NOT NULL DEFAULT 'sweep',
+    cursor          TEXT    NOT NULL DEFAULT '',
     last_word_index INTEGER NOT NULL DEFAULT -1,
     status          TEXT    NOT NULL DEFAULT 'running'
 );

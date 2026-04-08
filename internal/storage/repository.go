@@ -28,6 +28,13 @@ const (
 	StatusCompleted = "completed"
 )
 
+// Mode values for the sessions table. "sweep" is the default 12-position
+// single-mutation iteration; "walk" is the full 2048^12 keyspace walk.
+const (
+	ModeSweep = "sweep"
+	ModeWalk  = "walk"
+)
+
 // SessionSignature uniquely identifies a logical run. Two runs with the same
 // signature are considered the same session for resume purposes. Only the
 // fields below contribute to the lookup; metadata like rate and the
@@ -50,6 +57,8 @@ type SessionInit struct {
 	WordlistPath  string  // wordlist file path, "" = embedded default
 	Workers       int     // number of parallel deriver goroutines configured
 	PositionsSpec string  // raw --positions value, e.g. "0-11" or "0,3,7"
+	Mode          string  // "sweep" (default) or "walk"
+	Cursor        string  // walk-mode cursor "i0,i1,...,i11"; empty for sweep
 }
 
 // Session is a row from the sessions table — the full state of one logical
@@ -68,6 +77,8 @@ type Session struct {
 	WordlistPath  string
 	Workers       int
 	PositionsSpec string
+	Mode          string
+	Cursor        string
 	LastWordIndex int
 	Status        string
 }
@@ -138,6 +149,8 @@ func ensureSessionColumns(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN wordlist_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN workers INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE sessions ADD COLUMN positions_spec TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'sweep'`,
+		`ALTER TABLE sessions ADD COLUMN cursor TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -213,10 +226,11 @@ SELECT id FROM sessions
 		if _, err := r.db.ExecContext(ctx,
 			`UPDATE sessions SET status = ?, ended_at_unix = NULL,
                                   template = ?, rate = ?, wordlist_path = ?,
-                                  workers = ?, positions_spec = ?
+                                  workers = ?, positions_spec = ?,
+                                  mode = ?, cursor = ?
               WHERE id = ?`,
 			StatusRunning, init.Template, init.Rate, init.WordlistPath,
-			init.Workers, init.PositionsSpec, id,
+			init.Workers, init.PositionsSpec, modeOrDefault(init.Mode), init.Cursor, id,
 		); err != nil {
 			return 0, fmt.Errorf("resume session: %w", err)
 		}
@@ -228,12 +242,12 @@ SELECT id FROM sessions
 
 	const insertQ = `
 INSERT INTO sessions
-  (started_at_unix, template_hash, template, position, api, address_type, n_addresses, rate, wordlist_path, workers, positions_spec, status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (started_at_unix, template_hash, template, position, api, address_type, n_addresses, rate, wordlist_path, workers, positions_spec, mode, cursor, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := r.db.ExecContext(ctx, insertQ,
 		time.Now().Unix(), sig.TemplateHash, init.Template, sig.Position,
 		sig.API, sig.AddressType, sig.NAddresses, init.Rate, init.WordlistPath,
-		init.Workers, init.PositionsSpec, StatusRunning,
+		init.Workers, init.PositionsSpec, modeOrDefault(init.Mode), init.Cursor, StatusRunning,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert session: %w", err)
@@ -255,7 +269,8 @@ func (r *Repository) LatestResumable(ctx context.Context) (*Session, error) {
 	const q = `
 SELECT id, started_at_unix, COALESCE(ended_at_unix, 0),
        template_hash, template, position, api, address_type, n_addresses,
-       rate, wordlist_path, workers, positions_spec, last_word_index, status
+       rate, wordlist_path, workers, positions_spec, mode, cursor,
+       last_word_index, status
   FROM sessions
  WHERE status IN (?, ?)
  ORDER BY started_at_unix DESC, id DESC
@@ -264,7 +279,8 @@ SELECT id, started_at_unix, COALESCE(ended_at_unix, 0),
 	err := r.db.QueryRowContext(ctx, q, StatusRunning, StatusPaused).Scan(
 		&s.ID, &s.StartedAtUnix, &s.EndedAtUnix,
 		&s.TemplateHash, &s.Template, &s.Position, &s.API, &s.AddressType, &s.NAddresses,
-		&s.Rate, &s.WordlistPath, &s.Workers, &s.PositionsSpec, &s.LastWordIndex, &s.Status,
+		&s.Rate, &s.WordlistPath, &s.Workers, &s.PositionsSpec, &s.Mode, &s.Cursor,
+		&s.LastWordIndex, &s.Status,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -297,6 +313,31 @@ func (r *Repository) MarkPausedAsCompleted(ctx context.Context, sig SessionSigna
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// modeOrDefault returns the given mode if non-empty, else ModeSweep. Used
+// as a defensive default at insert/update time so the column never holds
+// the empty string.
+func modeOrDefault(m string) string {
+	if m == "" {
+		return ModeSweep
+	}
+	return m
+}
+
+// CheckpointCursor records the latest walk-mode cursor for the session.
+// Used by the keyspace walker to persist progress between batches so that
+// resume can pick up exactly where it left off.
+func (r *Repository) CheckpointCursor(ctx context.Context, sessionID int64, cursor string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE sessions SET cursor = ? WHERE id = ?`,
+		cursor, sessionID,
+	); err != nil {
+		return fmt.Errorf("checkpoint cursor: %w", err)
+	}
+	return nil
 }
 
 // Checkpoint records that all word indices ≤ wordIndex have been processed

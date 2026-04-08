@@ -41,6 +41,8 @@ type Config struct {
 	BatchSize    int
 	Reset        bool // ignore the most-recent paused session and start fresh
 	NoDashboard  bool
+	NoWalk       bool // stop after the sweep; do not transition into the keyspace walk
+	SkipSweep    bool // skip the 12-position sweep entirely and go straight to walk
 }
 
 // Default returns a Config populated with the package defaults.
