@@ -76,8 +76,16 @@ type Config struct {
 // Dependencies bundles the collaborators Run needs. Tests inject fakes here.
 type Dependencies struct {
 	Repository *storage.Repository
+	Iterator   Iterator
 	Deriver    Deriver
 	Checker    Checker
+}
+
+// Iterator is the subset of *bip39.Iterator Run uses. It is defined as an
+// interface so tests can inject a tiny stub instead of constructing a real
+// 2048-word iterator.
+type Iterator interface {
+	CandidateAt(template []string, pos, i int) (string, error)
 }
 
 // Deriver is the subset of derivation.Deriver Run uses. Defining it here lets

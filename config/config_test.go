@@ -1,6 +1,8 @@
 package config_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -114,6 +116,7 @@ func TestValidateRejectsEmptyDBPath(t *testing.T) {
 func TestApplyEnvOverridesEmptyAndIsOverridenByFlags(t *testing.T) {
 	t.Setenv("SEEDHUNTER_API", "blockstream")
 	t.Setenv("SEEDHUNTER_DB", "/tmp/from-env.db")
+	t.Setenv("SEEDHUNTER_WORDLIST", "/tmp/from-env-wordlist.txt")
 
 	c := config.Default()
 	c.ApplyEnv()
@@ -123,5 +126,46 @@ func TestApplyEnvOverridesEmptyAndIsOverridenByFlags(t *testing.T) {
 	}
 	if c.DBPath != "/tmp/from-env.db" {
 		t.Errorf("DBPath: want /tmp/from-env.db from env, got %s", c.DBPath)
+	}
+	if c.WordlistPath != "/tmp/from-env-wordlist.txt" {
+		t.Errorf("WordlistPath: want /tmp/from-env-wordlist.txt from env, got %s", c.WordlistPath)
+	}
+}
+
+func TestValidateAcceptsEmptyWordlistPathAsEmbeddedDefault(t *testing.T) {
+	c := good()
+	c.WordlistPath = ""
+	if err := c.Validate(); err != nil {
+		t.Errorf("empty wordlist path should be allowed: %v", err)
+	}
+}
+
+func TestValidateAcceptsExistingWordlistFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "words.txt")
+	if err := os.WriteFile(path, []byte("dummy\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := good()
+	c.WordlistPath = path
+	if err := c.Validate(); err != nil {
+		t.Errorf("existing wordlist path should validate: %v", err)
+	}
+}
+
+func TestValidateRejectsMissingWordlistFile(t *testing.T) {
+	c := good()
+	c.WordlistPath = "/nonexistent/path/to/words.txt"
+	if err := c.Validate(); err == nil {
+		t.Error("missing wordlist file should fail validation")
+	}
+}
+
+func TestValidateRejectsDirectoryAsWordlistPath(t *testing.T) {
+	dir := t.TempDir()
+	c := good()
+	c.WordlistPath = dir
+	if err := c.Validate(); err == nil {
+		t.Error("directory wordlist path should fail validation")
 	}
 }

@@ -42,7 +42,7 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 	if err := validateConfig(cfg); err != nil {
 		return Result{}, err
 	}
-	if deps.Repository == nil || deps.Deriver == nil || deps.Checker == nil {
+	if deps.Repository == nil || deps.Deriver == nil || deps.Checker == nil || deps.Iterator == nil {
 		return Result{}, errors.New("pipeline: dependencies must be non-nil")
 	}
 
@@ -116,7 +116,7 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 	genErrCh := make(chan error, 1)
 	go func() {
 		defer close(candidates)
-		genErrCh <- generate(ctx, cfg, startIdx, candidates)
+		genErrCh <- generate(ctx, cfg, deps.Iterator, startIdx, candidates)
 	}()
 
 	go func() {
@@ -194,9 +194,9 @@ func validateConfig(cfg Config) error {
 }
 
 // generate emits Candidate values for word indices in [startIdx, 2048).
-func generate(ctx context.Context, cfg Config, startIdx int, out chan<- Candidate) error {
+func generate(ctx context.Context, cfg Config, it Iterator, startIdx int, out chan<- Candidate) error {
 	for i := startIdx; i < wordlistSize; i++ {
-		mnemonic, err := bip39.CandidateAt(cfg.Template, cfg.Position, i)
+		mnemonic, err := it.CandidateAt(cfg.Template, cfg.Position, i)
 		if err != nil {
 			return err
 		}

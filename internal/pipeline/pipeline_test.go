@@ -11,10 +11,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Chemaclass/seed-hunter/internal/bip39"
 	"github.com/Chemaclass/seed-hunter/internal/derivation"
 	"github.com/Chemaclass/seed-hunter/internal/pipeline"
 	"github.com/Chemaclass/seed-hunter/internal/storage"
+	"github.com/Chemaclass/seed-hunter/internal/wordlist"
 )
+
+func newIterator(t *testing.T) *bip39.Iterator {
+	t.Helper()
+	it, err := bip39.NewIterator(wordlist.Default())
+	if err != nil {
+		t.Fatalf("NewIterator: %v", err)
+	}
+	return it
+}
 
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
@@ -95,6 +106,7 @@ func TestRunFromScratchProcessesEntireKeyspaceAndCompletesSession(t *testing.T) 
 
 	res, err := pipeline.Run(ctx, cfg, pipeline.Dependencies{
 		Repository: repo,
+		Iterator:   newIterator(t),
 		Deriver:    fakeDeriver{},
 		Checker:    checker,
 	}, stats)
@@ -140,6 +152,7 @@ func TestRunCancelMidRunMarksSessionPausedWithCheckpoint(t *testing.T) {
 
 	res, err := pipeline.Run(ctx, cfg, pipeline.Dependencies{
 		Repository: repo,
+		Iterator:   newIterator(t),
 		Deriver:    fakeDeriver{},
 		Checker:    checker,
 	}, pipeline.NewStats())
@@ -191,6 +204,7 @@ func TestRunResumesPausedSessionAndFinishesRemainder(t *testing.T) {
 	firstChecker := &countingChecker{cancel: cancel1, cancelAfter: 100}
 	res1, err := pipeline.Run(ctx1, cfg, pipeline.Dependencies{
 		Repository: repo,
+		Iterator:   newIterator(t),
 		Deriver:    fakeDeriver{},
 		Checker:    firstChecker,
 	}, pipeline.NewStats())
@@ -207,6 +221,7 @@ func TestRunResumesPausedSessionAndFinishesRemainder(t *testing.T) {
 	secondChecker := &countingChecker{}
 	res2, err := pipeline.Run(ctx2, cfg, pipeline.Dependencies{
 		Repository: repo,
+		Iterator:   newIterator(t),
 		Deriver:    fakeDeriver{},
 		Checker:    secondChecker,
 	}, pipeline.NewStats())
@@ -269,6 +284,7 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 			mutate(&cfg)
 			_, err := pipeline.Run(context.Background(), cfg, pipeline.Dependencies{
 				Repository: repo,
+				Iterator:   newIterator(t),
 				Deriver:    fakeDeriver{},
 				Checker:    &countingChecker{},
 			}, nil)
@@ -282,10 +298,12 @@ func TestRunRejectsInvalidConfig(t *testing.T) {
 func TestRunRequiresAllDependencies(t *testing.T) {
 	cfg := newCfg()
 	repo := newRepo(t)
+	it := newIterator(t)
 	missing := []pipeline.Dependencies{
-		{Deriver: fakeDeriver{}, Checker: &countingChecker{}}, // no repo
-		{Repository: repo, Checker: &countingChecker{}},       // no deriver
-		{Repository: repo, Deriver: fakeDeriver{}},            // no checker
+		{Iterator: it, Deriver: fakeDeriver{}, Checker: &countingChecker{}},     // no repo
+		{Repository: repo, Deriver: fakeDeriver{}, Checker: &countingChecker{}}, // no iterator
+		{Repository: repo, Iterator: it, Checker: &countingChecker{}},           // no deriver
+		{Repository: repo, Iterator: it, Deriver: fakeDeriver{}},                // no checker
 	}
 	for i, deps := range missing {
 		_, err := pipeline.Run(context.Background(), cfg, deps, nil)

@@ -17,11 +17,13 @@ import (
 	extbip39 "github.com/tyler-smith/go-bip39"
 
 	"github.com/Chemaclass/seed-hunter/config"
+	"github.com/Chemaclass/seed-hunter/internal/bip39"
 	"github.com/Chemaclass/seed-hunter/internal/checker"
 	"github.com/Chemaclass/seed-hunter/internal/dashboard"
 	"github.com/Chemaclass/seed-hunter/internal/derivation"
 	"github.com/Chemaclass/seed-hunter/internal/pipeline"
 	"github.com/Chemaclass/seed-hunter/internal/storage"
+	"github.com/Chemaclass/seed-hunter/internal/wordlist"
 )
 
 var runFlags = config.Default()
@@ -38,6 +40,7 @@ func init() {
 
 	f := runCmd.Flags()
 	f.StringVar(&runFlags.DBPath, "db", runFlags.DBPath, "SQLite database path")
+	f.StringVar(&runFlags.WordlistPath, "wordlist", runFlags.WordlistPath, "path to a 2048-word BIP-39 wordlist file (empty = embedded English)")
 	f.StringVar(&runFlags.Template, "template", runFlags.Template, "12-word BIP-39 template (empty = generate a random demo seed)")
 	f.IntVar(&runFlags.Position, "position", runFlags.Position, "word position to mutate (0-11)")
 	f.IntVar(&runFlags.NAddresses, "addresses", runFlags.NAddresses, "number of receiving addresses to derive per candidate")
@@ -55,6 +58,21 @@ func runE(cmd *cobra.Command, _ []string) error {
 	cfg := runFlags
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
+	}
+
+	// Load the wordlist FIRST: it influences both the iterator (which words
+	// it yields) and the underlying tyler-smith/go-bip39 library (which uses
+	// a process-global wordlist for checksum validation and for generating
+	// the random demo mnemonic). Binding both to the same source guarantees
+	// the iterator and the deriver always agree on the words.
+	words, err := wordlist.Load(cfg.WordlistPath)
+	if err != nil {
+		return fmt.Errorf("load wordlist: %w", err)
+	}
+	extbip39.SetWordList(words)
+	iterator, err := bip39.NewIterator(words)
+	if err != nil {
+		return fmt.Errorf("build iterator: %w", err)
 	}
 
 	template, err := resolveTemplate(cfg.Template, cmd.OutOrStdout())
@@ -90,6 +108,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 	}
 	deps := pipeline.Dependencies{
 		Repository: repo,
+		Iterator:   iterator,
 		Deriver:    derivation.New(),
 		Checker:    rateLimited,
 	}

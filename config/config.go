@@ -29,6 +29,7 @@ const (
 // Config is the validated user-supplied configuration for one CLI invocation.
 type Config struct {
 	DBPath        string
+	WordlistPath  string // "" means use the embedded English BIP-39 default
 	Template      string // raw flag value; "" means generate one
 	Position      int
 	NAddresses    int
@@ -63,6 +64,9 @@ func Default() Config {
 func (c *Config) ApplyEnv() {
 	if v, ok := os.LookupEnv("SEEDHUNTER_DB"); ok {
 		c.DBPath = v
+	}
+	if v, ok := os.LookupEnv("SEEDHUNTER_WORDLIST"); ok {
+		c.WordlistPath = v
 	}
 	if v, ok := os.LookupEnv("SEEDHUNTER_TEMPLATE"); ok {
 		c.Template = v
@@ -111,6 +115,15 @@ func (c Config) Validate() error {
 	}
 	if c.DBPath == "" {
 		return errors.New("db path must not be empty")
+	}
+	if c.WordlistPath != "" {
+		info, err := os.Stat(c.WordlistPath)
+		if err != nil {
+			return fmt.Errorf("wordlist path %q: %w", c.WordlistPath, err)
+		}
+		if info.IsDir() {
+			return fmt.Errorf("wordlist path %q is a directory, expected a file", c.WordlistPath)
+		}
 	}
 	return nil
 }

@@ -141,6 +141,7 @@ always win over environment values.
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--db` | `SEEDHUNTER_DB` | `./seed-hunter.db` | SQLite database path |
+| `--wordlist` | `SEEDHUNTER_WORDLIST` | _(embedded English)_ | Path to a 2048-word BIP-39 wordlist file |
 | `--template` | `SEEDHUNTER_TEMPLATE` | _(random)_ | 12-word BIP-39 starting mnemonic |
 | `--position` | — | `0` | Word position to mutate (0–11) |
 | `--addresses` | — | `1` | Receiving addresses to derive per candidate |
@@ -222,6 +223,36 @@ needs. The numbers do the work.
 | `internal/storage/` | SQLite repository with embedded schema and resume support |
 | `internal/pipeline/` | The four-stage channel pipeline that wires everything together |
 | `internal/dashboard/` | Pure `Render`, plus a 200ms repaint loop driven by atomic counters |
+
+## Wordlist
+
+The 2048 candidate words are loaded from a file at startup, not pulled from a
+hard-coded library. By default `seed-hunter` uses the canonical English
+BIP-39 wordlist that ships **embedded** in the binary at build time
+(`internal/wordlist/english.txt`, byte-for-byte identical to
+[bitcoin/bips/bip-0039/english.txt](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt)).
+No file lookup is needed for the default; the binary works on a system that
+doesn't have any wordlist files at all.
+
+To use a different language, point `--wordlist` (or `SEEDHUNTER_WORDLIST`) at
+one of the other official BIP-39 wordlist files from the
+[bitcoin/bips repository](https://github.com/bitcoin/bips/tree/master/bip-0039):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/spanish.txt -o spanish.txt
+./seed-hunter run --wordlist ./spanish.txt --template "..."
+```
+
+When you supply `--wordlist`, `seed-hunter` also rebinds the underlying
+BIP-39 library so that checksum validation and PBKDF2 seed derivation use the
+same words — the iterator and the deriver are always in sync. The file must
+contain exactly **2048 unique non-empty lines** (UTF-8, one word per line).
+Anything else is rejected at startup with a clear error.
+
+> ⚠️ A custom wordlist that is not one of the 9 official BIP-39 lists will
+> still load, but every candidate will fail the BIP-39 checksum and no
+> mnemonic will reach the balance check. That's only useful as a "show me how
+> the iterator walks 2048 candidates" demo.
 
 ## Privacy
 

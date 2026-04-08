@@ -1,11 +1,12 @@
-package bip39
+package bip39_test
 
 import (
 	"errors"
 	"strings"
 	"testing"
 
-	extbip39 "github.com/tyler-smith/go-bip39"
+	"github.com/Chemaclass/seed-hunter/internal/bip39"
+	"github.com/Chemaclass/seed-hunter/internal/wordlist"
 )
 
 // validTemplate is the canonical BIP-39 test vector "all abandon" mnemonic
@@ -18,10 +19,32 @@ var validTemplate = []string{
 	"abandon", "abandon", "abandon", "about",
 }
 
+// newIterator builds an Iterator backed by the embedded English wordlist.
+// All tests in this file share this constructor so a wordlist change in one
+// place propagates everywhere.
+func newIterator(t *testing.T) *bip39.Iterator {
+	t.Helper()
+	it, err := bip39.NewIterator(wordlist.Default())
+	if err != nil {
+		t.Fatalf("NewIterator: %v", err)
+	}
+	return it
+}
+
+func TestNewIteratorRejectsWordlistOfWrongSize(t *testing.T) {
+	t.Parallel()
+
+	_, err := bip39.NewIterator([]string{"only", "three", "words"})
+	if !errors.Is(err, bip39.ErrInvalidWordlist) {
+		t.Fatalf("expected ErrInvalidWordlist, got %v", err)
+	}
+}
+
 func TestIterateYields2048UniqueMnemonics(t *testing.T) {
 	t.Parallel()
 
-	seq, err := Iterate(validTemplate, 3)
+	it := newIterator(t)
+	seq, err := it.Iterate(validTemplate, 3)
 	if err != nil {
 		t.Fatalf("Iterate returned unexpected error: %v", err)
 	}
@@ -40,13 +63,14 @@ func TestIterateRespectsPosition(t *testing.T) {
 	t.Parallel()
 
 	const pos = 5
-	seq, err := Iterate(validTemplate, pos)
+	it := newIterator(t)
+	seq, err := it.Iterate(validTemplate, pos)
 	if err != nil {
 		t.Fatalf("Iterate returned unexpected error: %v", err)
 	}
 
 	wordset := make(map[string]struct{}, 2048)
-	for _, w := range extbip39.GetWordList() {
+	for _, w := range wordlist.Default() {
 		wordset[w] = struct{}{}
 	}
 
@@ -69,8 +93,6 @@ func TestIterateRespectsPosition(t *testing.T) {
 		}
 		checked++
 		if checked >= 50 {
-			// Sampling the first 50 entries is enough to demonstrate the
-			// invariant — no need to walk the full 2048.
 			break
 		}
 	}
@@ -83,6 +105,7 @@ func TestIterateRespectsPosition(t *testing.T) {
 func TestIterateInvalidTemplateLengthErrors(t *testing.T) {
 	t.Parallel()
 
+	it := newIterator(t)
 	cases := map[string][]string{
 		"eleven words": {
 			"abandon", "abandon", "abandon", "abandon",
@@ -98,8 +121,8 @@ func TestIterateInvalidTemplateLengthErrors(t *testing.T) {
 
 	for name, tmpl := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := Iterate(tmpl, 0)
-			if !errors.Is(err, ErrInvalidTemplate) {
+			_, err := it.Iterate(tmpl, 0)
+			if !errors.Is(err, bip39.ErrInvalidTemplate) {
 				t.Fatalf("expected ErrInvalidTemplate, got %v", err)
 			}
 		})
@@ -109,11 +132,12 @@ func TestIterateInvalidTemplateLengthErrors(t *testing.T) {
 func TestIterateInvalidWordErrors(t *testing.T) {
 	t.Parallel()
 
+	it := newIterator(t)
 	tmpl := append([]string(nil), validTemplate...)
 	tmpl[7] = "notabip39word"
 
-	_, err := Iterate(tmpl, 0)
-	if !errors.Is(err, ErrInvalidTemplate) {
+	_, err := it.Iterate(tmpl, 0)
+	if !errors.Is(err, bip39.ErrInvalidTemplate) {
 		t.Fatalf("expected ErrInvalidTemplate, got %v", err)
 	}
 }
@@ -121,8 +145,9 @@ func TestIterateInvalidWordErrors(t *testing.T) {
 func TestIterateInvalidPositionErrors(t *testing.T) {
 	t.Parallel()
 
+	it := newIterator(t)
 	for _, pos := range []int{-1, 12} {
-		if _, err := Iterate(validTemplate, pos); !errors.Is(err, ErrInvalidPosition) {
+		if _, err := it.Iterate(validTemplate, pos); !errors.Is(err, bip39.ErrInvalidPosition) {
 			t.Fatalf("pos=%d: expected ErrInvalidPosition, got %v", pos, err)
 		}
 	}
@@ -132,7 +157,8 @@ func TestCandidateAtMatchesIteratorOrder(t *testing.T) {
 	t.Parallel()
 
 	const pos = 4
-	seq, err := Iterate(validTemplate, pos)
+	it := newIterator(t)
+	seq, err := it.Iterate(validTemplate, pos)
 	if err != nil {
 		t.Fatalf("Iterate returned unexpected error: %v", err)
 	}
@@ -143,7 +169,7 @@ func TestCandidateAtMatchesIteratorOrder(t *testing.T) {
 	}
 
 	for _, i := range []int{0, 1, 7, 42, 123, 1024, 2047} {
-		got, err := CandidateAt(validTemplate, pos, i)
+		got, err := it.CandidateAt(validTemplate, pos, i)
 		if err != nil {
 			t.Fatalf("CandidateAt(%d) returned error: %v", i, err)
 		}
@@ -156,9 +182,22 @@ func TestCandidateAtMatchesIteratorOrder(t *testing.T) {
 func TestCandidateAtInvalidIndexErrors(t *testing.T) {
 	t.Parallel()
 
+	it := newIterator(t)
 	for _, i := range []int{-1, 2048} {
-		if _, err := CandidateAt(validTemplate, 0, i); !errors.Is(err, ErrInvalidPosition) {
+		if _, err := it.CandidateAt(validTemplate, 0, i); !errors.Is(err, bip39.ErrInvalidPosition) {
 			t.Fatalf("i=%d: expected ErrInvalidPosition, got %v", i, err)
 		}
+	}
+}
+
+func TestIteratorWordsReturnsDefensiveCopy(t *testing.T) {
+	t.Parallel()
+
+	it := newIterator(t)
+	first := it.Words()
+	first[0] = "MUTATED"
+	second := it.Words()
+	if second[0] == "MUTATED" {
+		t.Errorf("Words() must return a defensive copy")
 	}
 }
