@@ -41,10 +41,10 @@ make test
 make lint    # requires golangci-lint
 ```
 
-If you don't have the linter installed:
+If you don't have the linter installed (CI uses v2.11.4):
 
 ```sh
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
 ```
 
 You'll need Go 1.26 or later and `git`. Nothing else.

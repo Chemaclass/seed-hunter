@@ -293,7 +293,7 @@ func logResults(
 			return err
 		}
 		// Checkpoint the highest word index in the batch.
-		topIdx := int(batch[len(batch)-1].WordIndex)
+		topIdx := batch[len(batch)-1].WordIndex
 		if err := repo.Checkpoint(writeCtx, sessionID, topIdx); err != nil {
 			return err
 		}

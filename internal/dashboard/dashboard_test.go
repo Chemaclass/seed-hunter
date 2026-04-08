@@ -23,13 +23,6 @@ func baseMeta() Meta {
 	}
 }
 
-func baseFrame(meta Meta) Frame {
-	return Frame{
-		Meta:      meta,
-		SessionID: 4,
-	}
-}
-
 func TestRenderShowsProcessedAndPercentage(t *testing.T) {
 	f := Frame{
 		Meta:      baseMeta(),
