@@ -56,6 +56,15 @@ func resetE(cmd *cobra.Command, _ []string) error {
 	if err := repo.Reset(context.Background()); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
+
+	// Also remove the auto-generated demo-template sidecar so the next run
+	// without --template starts from a clean slate. Missing file is fine.
+	if path := sidecarPath(resetFlags.DBPath); path != "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(cmd.OutOrStdout(), "warning: could not remove %s: %v\n", path, err)
+		}
+	}
+
 	fmt.Fprintln(cmd.OutOrStdout(), "ok")
 	return nil
 }

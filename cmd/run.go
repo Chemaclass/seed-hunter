@@ -75,10 +75,11 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("build iterator: %w", err)
 	}
 
-	template, err := resolveTemplate(cfg.Template, cmd.OutOrStdout())
+	template, generated, err := resolveTemplate(cfg.Template, sidecarPath(cfg.DBPath), cmd.OutOrStdout(), generateRandomMnemonic)
 	if err != nil {
 		return err
 	}
+	_ = generated // captured for the resume hint below
 
 	deriveWorkers := cfg.DeriveWorkers
 	if deriveWorkers <= 0 {
@@ -153,36 +154,113 @@ func runE(cmd *cobra.Command, _ []string) error {
 		"run finished: status=%s session=%d end_index=%d resumed=%t cancelled=%t\n",
 		res.FinalStatus, res.SessionID, res.EndIndex, res.WasResumed, res.WasCancelled,
 	)
+	if res.FinalStatus == storage.StatusPaused {
+		printResumeHint(cmd.OutOrStdout(), template, cfg)
+	}
 	return nil
 }
 
-// resolveTemplate returns the 12-word template the run will iterate over. If
-// the user supplied an empty template, a random demo mnemonic is generated
-// and printed once with a clear "do not fund this" notice.
-func resolveTemplate(raw string, out io.Writer) ([]string, error) {
+// printResumeHint emits a copy-paste-ready command that re-runs the same
+// session signature. It is shown only when the run paused, so the user
+// always knows exactly how to continue. The template is included in full
+// so resume works even if the sidecar file is deleted.
+func printResumeHint(out io.Writer, template []string, cfg config.Config) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "To resume this session manually, run:")
+	fmt.Fprintf(out,
+		"  seed-hunter run --template %q --position %d --addresses %d --api %s --script-type %s --rate %g\n",
+		strings.Join(template, " "),
+		cfg.Position,
+		cfg.NAddresses,
+		cfg.API,
+		cfg.ScriptType,
+		cfg.Rate,
+	)
+}
+
+// resolveTemplate returns the 12-word template the run will iterate over.
+//
+// Resolution order, in priority:
+//  1. raw (the --template flag) — if non-empty, use it verbatim.
+//  2. sidecarPath — if a sidecar file exists at that path with a 12-word
+//     mnemonic, use it. This is what makes "Ctrl+C, then run again" resume
+//     the SAME random demo seed instead of generating a new one.
+//  3. otherwise call generate() to produce a fresh random mnemonic, write
+//     it to sidecarPath for next time, and print the "do not fund" notice.
+//
+// The bool return is `generated` — true only when this call produced a
+// brand-new random mnemonic. It's currently informational; callers can use
+// it to decide whether to print extra context.
+func resolveTemplate(raw, sidecarPath string, out io.Writer, generate func() (string, error)) (template []string, generated bool, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
 		words := strings.Fields(raw)
 		if len(words) != 12 {
-			return nil, fmt.Errorf("template must be 12 words, got %d", len(words))
+			return nil, false, fmt.Errorf("template must be 12 words, got %d", len(words))
 		}
-		return words, nil
+		return words, false, nil
 	}
 
-	entropy, err := extbip39.NewEntropy(128)
-	if err != nil {
-		return nil, fmt.Errorf("generate entropy: %w", err)
+	if sidecarPath != "" {
+		if data, readErr := os.ReadFile(sidecarPath); readErr == nil {
+			words := strings.Fields(strings.TrimSpace(string(data)))
+			if len(words) == 12 {
+				fmt.Fprintf(out, "Reusing saved demo seed from %s (delete the file or pass --template to override).\n",
+					sidecarPath)
+				return words, false, nil
+			}
+			// File exists but is malformed — fall through and regenerate.
+			fmt.Fprintf(out, "Sidecar %s exists but is not a 12-word mnemonic; regenerating.\n",
+				sidecarPath)
+		}
 	}
-	mnemonic, err := extbip39.NewMnemonic(entropy)
+
+	mnemonic, err := generate()
 	if err != nil {
-		return nil, fmt.Errorf("generate mnemonic: %w", err)
+		return nil, false, err
 	}
 
 	fmt.Fprintln(out, "──── demo seed (DO NOT FUND) ───────────────────────────────")
 	fmt.Fprintln(out, mnemonic)
 	fmt.Fprintln(out, "This mnemonic was generated locally for educational use only.")
 	fmt.Fprintln(out, "────────────────────────────────────────────────────────────")
-	return strings.Fields(mnemonic), nil
+
+	if sidecarPath != "" {
+		if writeErr := os.WriteFile(sidecarPath, []byte(mnemonic+"\n"), 0o600); writeErr != nil {
+			fmt.Fprintf(out, "Warning: could not save demo seed to %s: %v\n", sidecarPath, writeErr)
+		} else {
+			fmt.Fprintf(out, "Saved to %s — re-run without --template to resume this session.\n",
+				sidecarPath)
+		}
+	}
+
+	return strings.Fields(mnemonic), true, nil
+}
+
+// generateRandomMnemonic produces a fresh 12-word mnemonic using the
+// process-global wordlist (which cmd/run.go binds to whatever wordlist file
+// the user loaded). It is the default `generate` callback for resolveTemplate
+// in production; tests inject a deterministic stub instead.
+func generateRandomMnemonic() (string, error) {
+	entropy, err := extbip39.NewEntropy(128)
+	if err != nil {
+		return "", fmt.Errorf("generate entropy: %w", err)
+	}
+	mnemonic, err := extbip39.NewMnemonic(entropy)
+	if err != nil {
+		return "", fmt.Errorf("generate mnemonic: %w", err)
+	}
+	return mnemonic, nil
+}
+
+// sidecarPath returns the path of the auto-generated-template sidecar file
+// for a given SQLite db path. The naming is `<db>.template`, e.g.
+// `seed-hunter.db.template`. Empty input returns empty.
+func sidecarPath(dbPath string) string {
+	if dbPath == "" {
+		return ""
+	}
+	return dbPath + ".template"
 }
 
 func hashTemplate(template []string) string {

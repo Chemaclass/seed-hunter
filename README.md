@@ -88,6 +88,27 @@ and `seed-hunter` will resume at the exact word index it left off at:
 ./seed-hunter run --position 0 --addresses 1 --rate 2   # ← resumes
 ```
 
+### How resume actually works
+
+Resume is keyed on a tuple of `(template_hash, position, api, script_type, addresses)`.
+Two `run` invocations with the same tuple resume the same session.
+
+The template is the tricky part: if you don't pass `--template`, `seed-hunter`
+generates a random demo seed for you and **saves it to a sidecar file** at
+`<dbpath>.template` (e.g. `seed-hunter.db.template`, `0600` permissions). The
+next run with no `--template` reads this file and reuses the same mnemonic, so
+resume works without you having to copy-paste anything.
+
+If you supply your own `--template`, the sidecar file is **not** touched —
+your template is your own to manage.
+
+Whenever a run pauses, `seed-hunter` also prints the **exact** command needed
+to resume the same session, so you have a copy-paste fallback even if you
+delete the sidecar.
+
+`reset --yes` clears the SQLite database and deletes the sidecar so you start
+truly fresh.
+
 When you're done, look at the totals:
 
 ```sh
