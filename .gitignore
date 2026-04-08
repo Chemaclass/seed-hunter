@@ -11,6 +11,10 @@ seed-hunter
 *.db-wal
 *.db-shm
 
+# Legacy sidecar from the previous fix; ignored so a stale local file
+# never sneaks back into git even though the code no longer writes one.
+*.db.template
+
 # Coverage
 coverage.out
 coverage.html
