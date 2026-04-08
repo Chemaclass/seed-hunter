@@ -30,13 +30,19 @@ var runFlags = config.Default()
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Start (or resume) the brute-force loop",
+	Short: "Start (or resume) the brute-force loop across one or more positions",
 	Long: `Run the brute-force loop.
 
 With no flags, "seed-hunter run" picks up the most recent paused session
 from the database and resumes it with all of its parameters intact —
 template, position, addresses, api, script type, rate, wordlist. The DB is
 the source of truth.
+
+By default --positions is "0-11", which means the run sweeps every word
+position sequentially: 12 × 2048 = 24,576 candidates total. After one
+position is exhausted (2048 attempts), the next position starts
+automatically. Pass --positions 5 to mutate just one position, or
+--positions 0,3-5,9 to pick a custom subset.
 
 Pass any flag to override the corresponding parameter for this run; the
 flags you don't pass are inherited from the last paused session. Pass
@@ -53,7 +59,7 @@ func init() {
 	f.StringVar(&runFlags.DBPath, "db", runFlags.DBPath, "SQLite database path")
 	f.StringVar(&runFlags.WordlistPath, "wordlist", runFlags.WordlistPath, "path to a 2048-word BIP-39 wordlist file (empty = embedded English)")
 	f.StringVar(&runFlags.Template, "template", runFlags.Template, "12-word BIP-39 template (empty = inherit from last session, or generate a random demo seed)")
-	f.IntVar(&runFlags.Position, "position", runFlags.Position, "word position to mutate (0-11)")
+	f.StringVar(&runFlags.Positions, "positions", runFlags.Positions, "word positions to sweep: '5', '0-11', '0,3,7' or '0,3-5,9'")
 	f.IntVar(&runFlags.NAddresses, "addresses", runFlags.NAddresses, "number of receiving addresses to derive per candidate")
 	f.StringVar(&runFlags.API, "api", runFlags.API, "balance API: mempool|blockstream")
 	f.StringVar(&runFlags.ScriptType, "script-type", runFlags.ScriptType, "address type: segwit|legacy")
@@ -79,6 +85,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	inheritedPosition := -1
 	if !cfg.Reset {
 		last, err := repo.LatestResumable(ctx)
 		if err != nil {
@@ -86,9 +93,10 @@ func runE(cmd *cobra.Command, _ []string) error {
 		}
 		if last != nil {
 			inheritFromSession(&cfg, last, cmd.Flags())
+			inheritedPosition = last.Position
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"Resuming session #%d at word index %d (use --reset to start over).\n",
-				last.ID, last.LastWordIndex+1,
+				"Resuming session #%d at position %d, word index %d (use --reset to start over).\n",
+				last.ID, last.Position, last.LastWordIndex+1,
 			)
 		}
 	}
@@ -97,10 +105,12 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Load the wordlist AFTER inherit so an inherited WordlistPath wins. The
-	// underlying tyler-smith/go-bip39 library uses a process-global wordlist
-	// for checksum validation and PBKDF2 seed derivation; binding it to the
-	// loaded list keeps the iterator and the deriver in sync.
+	positions, err := config.ParsePositions(cfg.Positions)
+	if err != nil {
+		return fmt.Errorf("invalid --positions: %w", err)
+	}
+
+	// Load the wordlist AFTER inherit so an inherited WordlistPath wins.
 	words, err := wordlist.Load(cfg.WordlistPath)
 	if err != nil {
 		return fmt.Errorf("load wordlist: %w", err)
@@ -116,8 +126,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Workers is validated >= 1 by config.Validate above; nothing more to do.
-	workers := cfg.Workers
+	workers := cfg.Workers // validated >= 1 above
 
 	baseChecker, err := checker.New(checker.Provider(cfg.API), &http.Client{Timeout: 15 * time.Second})
 	if err != nil {
@@ -125,18 +134,6 @@ func runE(cmd *cobra.Command, _ []string) error {
 	}
 	rateLimited := checker.WithRateLimit(baseChecker, cfg.Rate)
 
-	pipelineCfg := pipeline.Config{
-		Template:     template,
-		Position:     cfg.Position,
-		ScriptType:   derivation.ScriptType(cfg.ScriptType),
-		NAddresses:   cfg.NAddresses,
-		API:          cfg.API,
-		Rate:         cfg.Rate,
-		WordlistPath: cfg.WordlistPath,
-		Workers:      workers,
-		BatchSize:    cfg.BatchSize,
-		Fresh:        cfg.Reset,
-	}
 	deps := pipeline.Dependencies{
 		Repository: repo,
 		Iterator:   iterator,
@@ -144,10 +141,8 @@ func runE(cmd *cobra.Command, _ []string) error {
 		Checker:    rateLimited,
 	}
 
-	stats := pipeline.NewStats()
-
-	slog.Info("starting run",
-		"position", cfg.Position,
+	slog.Info("starting sweep",
+		"positions", cfg.Positions,
 		"api", cfg.API,
 		"script_type", cfg.ScriptType,
 		"addresses", cfg.NAddresses,
@@ -158,46 +153,139 @@ func runE(cmd *cobra.Command, _ []string) error {
 		"reset", cfg.Reset,
 	)
 
-	if !cfg.NoDashboard {
-		go dashboard.Run(ctx, cmd.OutOrStdout(), dashboard.Meta{
-			TemplateHash: hashTemplate(template),
-			Position:     cfg.Position,
-			API:          cfg.API,
-			ScriptType:   cfg.ScriptType,
-			Workers:      workers,
-			APIWorkers:   cfg.APIWorkers,
-			RateLimit:    cfg.Rate,
-			NAddresses:   cfg.NAddresses,
-		}, stats, 200*time.Millisecond)
+	// Determine the starting index in the positions list. If we're resuming
+	// a paused session, jump straight to the position it was on; otherwise
+	// start at the head of the list.
+	startIdx := startIndexInPositions(positions, inheritedPosition)
+
+	// Build the per-position runner. The closure captures everything except
+	// the position itself, so the outer sweepPositions loop only needs to
+	// pass the position number.
+	runOne := func(ctx context.Context, position int) (pipeline.Result, error) {
+		stats := pipeline.NewStats()
+		var dashCancel context.CancelFunc = func() {}
+		if !cfg.NoDashboard {
+			dashCtx, c := context.WithCancel(ctx)
+			dashCancel = c
+			go dashboard.Run(dashCtx, cmd.OutOrStdout(), dashboard.Meta{
+				TemplateHash: hashTemplate(template),
+				Position:     position,
+				API:          cfg.API,
+				ScriptType:   cfg.ScriptType,
+				Workers:      workers,
+				APIWorkers:   cfg.APIWorkers,
+				RateLimit:    cfg.Rate,
+				NAddresses:   cfg.NAddresses,
+			}, stats, 200*time.Millisecond)
+		}
+
+		pCfg := pipeline.Config{
+			Template:      template,
+			Position:      position,
+			ScriptType:    derivation.ScriptType(cfg.ScriptType),
+			NAddresses:    cfg.NAddresses,
+			API:           cfg.API,
+			Rate:          cfg.Rate,
+			WordlistPath:  cfg.WordlistPath,
+			Workers:       workers,
+			PositionsSpec: cfg.Positions,
+			BatchSize:     cfg.BatchSize,
+			Fresh:         cfg.Reset,
+		}
+		res, err := pipeline.Run(ctx, pCfg, deps, stats)
+		dashCancel()
+		// Give the dashboard goroutine a moment to stop repainting before
+		// we print the per-position summary, so the line isn't clobbered.
+		time.Sleep(50 * time.Millisecond)
+		return res, err
 	}
 
-	res, err := pipeline.Run(ctx, pipelineCfg, deps, stats)
-	if err != nil {
-		return fmt.Errorf("pipeline: %w", err)
+	return sweepPositions(ctx, cmd.OutOrStdout(), positions, startIdx, runOne)
+}
+
+// runOneFn is the per-position pipeline runner. sweepPositions calls it
+// once per position in the swept list. It is parameterised so the test for
+// sweepPositions can pass a deterministic stub instead of a real pipeline.
+type runOneFn func(ctx context.Context, position int) (pipeline.Result, error)
+
+// sweepPositions runs runOne for each position in positions[startIdx:], in
+// order. It honors:
+//
+//   - context cancellation: aborts the sweep without error
+//   - status=paused (Ctrl+C inside a position): aborts the sweep without error
+//   - status=completed: prints a per-position summary and continues
+//
+// When all positions in the slice complete, it prints a final "all
+// positions exhausted" summary. Any error from runOne is returned wrapped.
+func sweepPositions(ctx context.Context, out io.Writer, positions []int, startIdx int, runOne runOneFn) error {
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if startIdx >= len(positions) {
+		fmt.Fprintln(out, "nothing to sweep: starting index is past the end of the positions list")
+		return nil
 	}
 
-	fmt.Fprintln(cmd.OutOrStdout())
-	fmt.Fprintf(cmd.OutOrStdout(),
-		"run finished: status=%s session=%d end_index=%d resumed=%t cancelled=%t\n",
-		res.FinalStatus, res.SessionID, res.EndIndex, res.WasResumed, res.WasCancelled,
+	for i := startIdx; i < len(positions); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		pos := positions[i]
+		fmt.Fprintf(out, "\n──── position %d (%d/%d) ────\n", pos, i+1, len(positions))
+
+		res, err := runOne(ctx, pos)
+		if err != nil {
+			return fmt.Errorf("position %d: %w", pos, err)
+		}
+
+		fmt.Fprintf(out,
+			"position %d: status=%s session=%d end_index=%d resumed=%t cancelled=%t\n",
+			pos, res.FinalStatus, res.SessionID, res.EndIndex, res.WasResumed, res.WasCancelled,
+		)
+
+		if res.FinalStatus == storage.StatusPaused {
+			fmt.Fprintln(out,
+				"\nPosition paused. Run 'seed-hunter run' (no flags) to resume from where this stopped.")
+			return nil
+		}
+	}
+
+	fmt.Fprintf(out,
+		"\nSweep complete: %d positions × 2048 = %d candidates exhausted.\n",
+		len(positions)-startIdx, (len(positions)-startIdx)*2048,
 	)
-	if res.FinalStatus == storage.StatusPaused {
-		fmt.Fprintln(cmd.OutOrStdout(),
-			"Run 'seed-hunter run' (no flags) to resume from where this stopped.")
-	}
+	fmt.Fprintln(out,
+		"Reminder: this is 12 × 2048 = 24,576 attempts at most. The actual BIP-39")
+	fmt.Fprintln(out,
+		"keyspace is 2048^12 ≈ 5.4e+39. We just covered an infinitesimal slice.")
 	return nil
+}
+
+// startIndexInPositions returns the index of `current` in `positions`, or
+// 0 if `current` is not in the list (start at the head). A negative
+// `current` (no inherited position) also yields 0.
+func startIndexInPositions(positions []int, current int) int {
+	if current < 0 {
+		return 0
+	}
+	for i, p := range positions {
+		if p == current {
+			return i
+		}
+	}
+	return 0
 }
 
 // inheritFromSession overlays fields from last onto cfg, but only for flags
 // the user did NOT explicitly set on the command line. The user's --template,
-// --position, etc. always win; everything else inherits from the DB so that
+// --positions, etc. always win; everything else inherits from the DB so that
 // "seed-hunter run" with zero flags is enough to continue the previous run.
 func inheritFromSession(cfg *config.Config, last *storage.Session, flags *pflag.FlagSet) {
 	if !flags.Changed("template") && last.Template != "" {
 		cfg.Template = last.Template
 	}
-	if !flags.Changed("position") {
-		cfg.Position = last.Position
+	if !flags.Changed("positions") && last.PositionsSpec != "" {
+		cfg.Positions = last.PositionsSpec
 	}
 	if !flags.Changed("addresses") {
 		cfg.NAddresses = last.NAddresses

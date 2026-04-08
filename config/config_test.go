@@ -20,12 +20,22 @@ func TestValidateAcceptsDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsOutOfRangePosition(t *testing.T) {
-	for _, pos := range []int{-1, 12, 99} {
+func TestValidateRejectsBadPositionsSpec(t *testing.T) {
+	for _, spec := range []string{"", "-1", "12", "0-12", "abc", "1,1"} {
 		c := good()
-		c.Position = pos
+		c.Positions = spec
 		if err := c.Validate(); err == nil {
-			t.Errorf("position=%d should fail validation", pos)
+			t.Errorf("positions=%q should fail validation", spec)
+		}
+	}
+}
+
+func TestValidateAcceptsGoodPositionsSpecs(t *testing.T) {
+	for _, spec := range []string{"0", "11", "0-11", "3-7", "0,3,7", "0,3-5,9"} {
+		c := good()
+		c.Positions = spec
+		if err := c.Validate(); err != nil {
+			t.Errorf("positions=%q should validate, got: %v", spec, err)
 		}
 	}
 }

@@ -70,6 +70,7 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		Rate:             cfg.Rate,
 		WordlistPath:     cfg.WordlistPath,
 		Workers:          workers,
+		PositionsSpec:    cfg.PositionsSpec,
 	}
 
 	if cfg.Fresh {

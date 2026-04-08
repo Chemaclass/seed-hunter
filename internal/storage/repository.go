@@ -45,10 +45,11 @@ type SessionSignature struct {
 // alongside so a later "seed-hunter run" can recover them without any flags.
 type SessionInit struct {
 	SessionSignature
-	Template     string  // full plaintext mnemonic, persisted for auto-resume
-	Rate         float64 // requests/sec configured for this run
-	WordlistPath string  // wordlist file path, "" = embedded default
-	Workers      int     // number of parallel deriver goroutines configured
+	Template      string  // full plaintext mnemonic, persisted for auto-resume
+	Rate          float64 // requests/sec configured for this run
+	WordlistPath  string  // wordlist file path, "" = embedded default
+	Workers       int     // number of parallel deriver goroutines configured
+	PositionsSpec string  // raw --positions value, e.g. "0-11" or "0,3,7"
 }
 
 // Session is a row from the sessions table — the full state of one logical
@@ -66,6 +67,7 @@ type Session struct {
 	Rate          float64
 	WordlistPath  string
 	Workers       int
+	PositionsSpec string
 	LastWordIndex int
 	Status        string
 }
@@ -135,6 +137,7 @@ func ensureSessionColumns(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE sessions ADD COLUMN rate REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN wordlist_path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN workers INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE sessions ADD COLUMN positions_spec TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -210,9 +213,10 @@ SELECT id FROM sessions
 		if _, err := r.db.ExecContext(ctx,
 			`UPDATE sessions SET status = ?, ended_at_unix = NULL,
                                   template = ?, rate = ?, wordlist_path = ?,
-                                  workers = ?
+                                  workers = ?, positions_spec = ?
               WHERE id = ?`,
-			StatusRunning, init.Template, init.Rate, init.WordlistPath, init.Workers, id,
+			StatusRunning, init.Template, init.Rate, init.WordlistPath,
+			init.Workers, init.PositionsSpec, id,
 		); err != nil {
 			return 0, fmt.Errorf("resume session: %w", err)
 		}
@@ -224,12 +228,12 @@ SELECT id FROM sessions
 
 	const insertQ = `
 INSERT INTO sessions
-  (started_at_unix, template_hash, template, position, api, address_type, n_addresses, rate, wordlist_path, workers, status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  (started_at_unix, template_hash, template, position, api, address_type, n_addresses, rate, wordlist_path, workers, positions_spec, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := r.db.ExecContext(ctx, insertQ,
 		time.Now().Unix(), sig.TemplateHash, init.Template, sig.Position,
 		sig.API, sig.AddressType, sig.NAddresses, init.Rate, init.WordlistPath,
-		init.Workers, StatusRunning,
+		init.Workers, init.PositionsSpec, StatusRunning,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert session: %w", err)
@@ -251,7 +255,7 @@ func (r *Repository) LatestResumable(ctx context.Context) (*Session, error) {
 	const q = `
 SELECT id, started_at_unix, COALESCE(ended_at_unix, 0),
        template_hash, template, position, api, address_type, n_addresses,
-       rate, wordlist_path, workers, last_word_index, status
+       rate, wordlist_path, workers, positions_spec, last_word_index, status
   FROM sessions
  WHERE status IN (?, ?)
  ORDER BY started_at_unix DESC, id DESC
@@ -260,7 +264,7 @@ SELECT id, started_at_unix, COALESCE(ended_at_unix, 0),
 	err := r.db.QueryRowContext(ctx, q, StatusRunning, StatusPaused).Scan(
 		&s.ID, &s.StartedAtUnix, &s.EndedAtUnix,
 		&s.TemplateHash, &s.Template, &s.Position, &s.API, &s.AddressType, &s.NAddresses,
-		&s.Rate, &s.WordlistPath, &s.Workers, &s.LastWordIndex, &s.Status,
+		&s.Rate, &s.WordlistPath, &s.Workers, &s.PositionsSpec, &s.LastWordIndex, &s.Status,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

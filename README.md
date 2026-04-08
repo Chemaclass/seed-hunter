@@ -75,21 +75,43 @@ hunting:
 ```
 
 The first thing it prints is the freshly generated demo seed (with a clear
-"do not fund this" notice), then a live ANSI dashboard repaints in place
-showing attempts, rate, ETA for the current position, and — the punchline —
-the ETA in years for the full 2048¹² keyspace at your current throughput.
+"do not fund this" notice). By default, `seed-hunter` then **sweeps every
+word position from 0 to 11 sequentially**: 12 × 2048 = 24,576 candidates
+total. After each position completes, the next one starts automatically.
+
+A live ANSI dashboard repaints in place showing the current position,
+attempts, rate, ETA for that position, and — the punchline — the ETA in
+years for the full 2048¹² keyspace at your current throughput.
 
 Press `Ctrl+C` whenever you like. The pipeline drains, flushes the SQLite
-batch, and marks the session **paused**. To pick up exactly where you left
-off, run the same command with **no flags at all**:
+batch, and marks the current position's session **paused**. To pick up
+exactly where you left off (same word index, same position, then auto-
+advance through the remaining positions), run the same command with **no
+flags at all**:
 
 ```sh
-./seed-hunter run                # ← resumes the most recent paused session
+./seed-hunter run                # ← resumes wherever you stopped, then keeps going
 ```
 
-That's it. Every parameter (template, position, addresses, api, script type,
-rate, wordlist) is stored in SQLite and read back automatically. You don't
-need to remember or retype anything.
+Every parameter (template, positions list, addresses, api, script type,
+rate, wordlist, workers) is stored in SQLite and read back automatically.
+You don't need to remember or retype anything.
+
+### Sweeping a custom subset of positions
+
+Pass `--positions` to control which positions are visited and in what
+order:
+
+```sh
+./seed-hunter run --positions 5         # just position 5 (2048 candidates)
+./seed-hunter run --positions 0-11      # all 12 positions (default)
+./seed-hunter run --positions 3-7       # positions 3,4,5,6,7
+./seed-hunter run --positions 0,3,7     # just those three, in that order
+./seed-hunter run --positions 0,3-5,9   # mixed: 0, 3, 4, 5, 9
+```
+
+The `--positions` value gets persisted on every session row, so the same
+sweep continues across `Ctrl+C` / resume cycles.
 
 ### Overriding individual parameters on resume
 
@@ -188,7 +210,7 @@ when there is no previous session to inherit from (or when you pass
 | `--db` | `SEEDHUNTER_DB` | `./seed-hunter.db` | SQLite database path |
 | `--wordlist` | `SEEDHUNTER_WORDLIST` | _(embedded English)_ | Path to a 2048-word BIP-39 wordlist file |
 | `--template` | `SEEDHUNTER_TEMPLATE` | _(random)_ | 12-word BIP-39 starting mnemonic |
-| `--position` | — | `0` | Word position to mutate (0–11) |
+| `--positions` | — | `0-11` | Positions to sweep: `5`, `0-11`, `0,3,7`, `0,3-5,9` |
 | `--addresses` | — | `1` | Receiving addresses to derive per candidate |
 | `--api` | `SEEDHUNTER_API` | `mempool` | `mempool` or `blockstream` |
 | `--script-type` | `SEEDHUNTER_SCRIPT_TYPE` | `segwit` | `segwit` (BIP-84, `bc1...`) or `legacy` (BIP-44, `1...`) |

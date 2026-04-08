@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/Chemaclass/seed-hunter/config"
+	"github.com/Chemaclass/seed-hunter/internal/pipeline"
 	"github.com/Chemaclass/seed-hunter/internal/storage"
 )
 
@@ -82,25 +84,28 @@ func TestResolveTemplatePropagatesGeneratorError(t *testing.T) {
 func makeFlagsForInherit() *pflag.FlagSet {
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 	fs.String("template", "", "")
-	fs.Int("position", 0, "")
+	fs.String("positions", "", "")
 	fs.Int("addresses", 0, "")
 	fs.String("api", "", "")
 	fs.String("script-type", "", "")
 	fs.Float64("rate", 0, "")
 	fs.String("wordlist", "", "")
+	fs.Int("workers", 0, "")
 	return fs
 }
 
 func TestInheritFromSessionFillsAllUnsetFields(t *testing.T) {
 	cfg := config.Default()
 	last := &storage.Session{
-		Template:     "the actual previous mnemonic words go here ok x y",
-		Position:     7,
-		API:          "blockstream",
-		AddressType:  "legacy",
-		NAddresses:   5,
-		Rate:         3.5,
-		WordlistPath: "/tmp/spanish.txt",
+		Template:      "the actual previous mnemonic words go here ok x y",
+		Position:      7,
+		API:           "blockstream",
+		AddressType:   "legacy",
+		NAddresses:    5,
+		Rate:          3.5,
+		WordlistPath:  "/tmp/spanish.txt",
+		Workers:       6,
+		PositionsSpec: "0,3,7",
 	}
 	flags := makeFlagsForInherit()
 
@@ -109,8 +114,8 @@ func TestInheritFromSessionFillsAllUnsetFields(t *testing.T) {
 	if cfg.Template != last.Template {
 		t.Errorf("Template: want %q, got %q", last.Template, cfg.Template)
 	}
-	if cfg.Position != 7 {
-		t.Errorf("Position: want 7, got %d", cfg.Position)
+	if cfg.Positions != "0,3,7" {
+		t.Errorf("Positions: want 0,3,7, got %s", cfg.Positions)
 	}
 	if cfg.NAddresses != 5 {
 		t.Errorf("NAddresses: want 5, got %d", cfg.NAddresses)
@@ -127,31 +132,35 @@ func TestInheritFromSessionFillsAllUnsetFields(t *testing.T) {
 	if cfg.WordlistPath != "/tmp/spanish.txt" {
 		t.Errorf("WordlistPath: want /tmp/spanish.txt, got %s", cfg.WordlistPath)
 	}
+	if cfg.Workers != 6 {
+		t.Errorf("Workers: want 6, got %d", cfg.Workers)
+	}
 }
 
 func TestInheritFromSessionDoesNotOverrideExplicitFlags(t *testing.T) {
 	cfg := config.Default()
-	cfg.Position = 11   // user passed --position 11
-	cfg.API = "mempool" // user passed --api mempool
-	cfg.Rate = 7.0      // user passed --rate 7
+	cfg.Positions = "11" // user passed --positions 11
+	cfg.API = "mempool"  // user passed --api mempool
+	cfg.Rate = 7.0       // user passed --rate 7
 	last := &storage.Session{
-		Template:    "previous template here this should still be inherited y",
-		Position:    3,
-		API:         "blockstream",
-		AddressType: "legacy",
-		NAddresses:  9,
-		Rate:        2.0,
+		Template:      "previous template here this should still be inherited y",
+		Position:      3,
+		API:           "blockstream",
+		AddressType:   "legacy",
+		NAddresses:    9,
+		Rate:          2.0,
+		PositionsSpec: "0-11",
 	}
 	flags := makeFlagsForInherit()
-	_ = flags.Set("position", "11")
+	_ = flags.Set("positions", "11")
 	_ = flags.Set("api", "mempool")
 	_ = flags.Set("rate", "7")
 
 	inheritFromSession(&cfg, last, flags)
 
 	// User flags must be preserved.
-	if cfg.Position != 11 {
-		t.Errorf("Position must stay 11 (user-set), got %d", cfg.Position)
+	if cfg.Positions != "11" {
+		t.Errorf("Positions must stay 11 (user-set), got %s", cfg.Positions)
 	}
 	if cfg.API != "mempool" {
 		t.Errorf("API must stay mempool (user-set), got %s", cfg.API)
@@ -188,12 +197,7 @@ func TestInheritFromSessionIgnoresEmptyTemplateInLastSession(t *testing.T) {
 	inheritFromSession(&cfg, last, flags)
 
 	if cfg.Template != "" {
-		// cfg.Template was already empty by default, but the test still
-		// asserts the inherited value isn't a non-empty placeholder.
 		t.Errorf("Template should remain empty, got %q", cfg.Template)
-	}
-	if cfg.Position != 2 {
-		t.Errorf("Position should be inherited, got %d", cfg.Position)
 	}
 }
 
@@ -213,5 +217,138 @@ func TestInheritFromSessionIgnoresZeroRateInLastSession(t *testing.T) {
 
 	if cfg.Rate != defaultRate {
 		t.Errorf("Rate should remain default %g when last.Rate==0, got %g", defaultRate, cfg.Rate)
+	}
+}
+
+// ── sweepPositions and startIndexInPositions ──────────────────────────────
+
+func TestStartIndexInPositionsHandlesMatchAndMissAndNegative(t *testing.T) {
+	pos := []int{0, 3, 5, 9}
+	cases := []struct {
+		current int
+		want    int
+	}{
+		{0, 0}, // first
+		{3, 1},
+		{5, 2},
+		{9, 3},  // last
+		{4, 0},  // not in list → start at head
+		{-1, 0}, // sentinel "no inherited position"
+	}
+	for _, c := range cases {
+		got := startIndexInPositions(pos, c.current)
+		if got != c.want {
+			t.Errorf("startIndexInPositions(_, %d) = %d, want %d", c.current, got, c.want)
+		}
+	}
+}
+
+func TestSweepPositionsVisitsEveryPositionInOrder(t *testing.T) {
+	var visited []int
+	runOne := func(_ context.Context, pos int) (pipeline.Result, error) {
+		visited = append(visited, pos)
+		return pipeline.Result{FinalStatus: storage.StatusCompleted, EndIndex: 2047}, nil
+	}
+	var out bytes.Buffer
+	if err := sweepPositions(context.Background(), &out, []int{0, 3, 5, 9}, 0, runOne); err != nil {
+		t.Fatalf("sweepPositions: %v", err)
+	}
+	want := []int{0, 3, 5, 9}
+	if len(visited) != len(want) {
+		t.Fatalf("visited %d positions, want %d (visited=%v)", len(visited), len(want), visited)
+	}
+	for i := range want {
+		if visited[i] != want[i] {
+			t.Errorf("visit order: want %v, got %v", want, visited)
+			break
+		}
+	}
+	if !strings.Contains(out.String(), "Sweep complete") {
+		t.Errorf("missing sweep complete message; output:\n%s", out.String())
+	}
+}
+
+func TestSweepPositionsHonorsStartIdx(t *testing.T) {
+	var visited []int
+	runOne := func(_ context.Context, pos int) (pipeline.Result, error) {
+		visited = append(visited, pos)
+		return pipeline.Result{FinalStatus: storage.StatusCompleted}, nil
+	}
+	var out bytes.Buffer
+	if err := sweepPositions(context.Background(), &out, []int{0, 1, 2, 3}, 2, runOne); err != nil {
+		t.Fatalf("sweepPositions: %v", err)
+	}
+	want := []int{2, 3}
+	if len(visited) != len(want) || visited[0] != 2 || visited[1] != 3 {
+		t.Errorf("startIdx not honored: got %v, want %v", visited, want)
+	}
+}
+
+func TestSweepPositionsStopsOnPaused(t *testing.T) {
+	var visited []int
+	runOne := func(_ context.Context, pos int) (pipeline.Result, error) {
+		visited = append(visited, pos)
+		// First position pauses (Ctrl+C), sweep must stop.
+		return pipeline.Result{FinalStatus: storage.StatusPaused, EndIndex: 137}, nil
+	}
+	var out bytes.Buffer
+	if err := sweepPositions(context.Background(), &out, []int{0, 1, 2}, 0, runOne); err != nil {
+		t.Fatalf("sweepPositions: %v", err)
+	}
+	if len(visited) != 1 || visited[0] != 0 {
+		t.Errorf("paused result should stop sweep at first visited position, got %v", visited)
+	}
+	if !strings.Contains(out.String(), "Position paused") {
+		t.Errorf("missing 'Position paused' message; output:\n%s", out.String())
+	}
+}
+
+func TestSweepPositionsStopsOnContextCancel(t *testing.T) {
+	var visited []int
+	runOne := func(_ context.Context, pos int) (pipeline.Result, error) {
+		visited = append(visited, pos)
+		return pipeline.Result{FinalStatus: storage.StatusCompleted}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel BEFORE starting
+	var out bytes.Buffer
+	if err := sweepPositions(ctx, &out, []int{0, 1, 2}, 0, runOne); err != nil {
+		t.Fatalf("sweepPositions: %v", err)
+	}
+	if len(visited) != 0 {
+		t.Errorf("cancelled ctx should prevent any visits, got %v", visited)
+	}
+}
+
+func TestSweepPositionsPropagatesRunOneError(t *testing.T) {
+	bang := errors.New("runner exploded")
+	runOne := func(_ context.Context, _ int) (pipeline.Result, error) {
+		return pipeline.Result{}, bang
+	}
+	var out bytes.Buffer
+	err := sweepPositions(context.Background(), &out, []int{0}, 0, runOne)
+	if err == nil {
+		t.Fatal("expected wrapped error")
+	}
+	if !errors.Is(err, bang) {
+		t.Errorf("expected wrapped %v, got %v", bang, err)
+	}
+}
+
+func TestSweepPositionsHandlesStartIdxPastEnd(t *testing.T) {
+	var visited []int
+	runOne := func(_ context.Context, pos int) (pipeline.Result, error) {
+		visited = append(visited, pos)
+		return pipeline.Result{FinalStatus: storage.StatusCompleted}, nil
+	}
+	var out bytes.Buffer
+	if err := sweepPositions(context.Background(), &out, []int{0, 1}, 5, runOne); err != nil {
+		t.Fatalf("sweepPositions: %v", err)
+	}
+	if len(visited) != 0 {
+		t.Errorf("startIdx past end should yield no visits, got %v", visited)
+	}
+	if !strings.Contains(out.String(), "nothing to sweep") {
+		t.Errorf("missing 'nothing to sweep' message; output:\n%s", out.String())
 	}
 }

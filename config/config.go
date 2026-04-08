@@ -16,7 +16,7 @@ import (
 // Default values reused by both flag wiring and tests.
 const (
 	DefaultDBPath     = "./seed-hunter.db"
-	DefaultPosition   = 0
+	DefaultPositions  = "0-11" // sweep all 12 positions sequentially
 	DefaultNAddresses = 1
 	DefaultAPI        = "mempool"
 	DefaultScriptType = "segwit"
@@ -31,7 +31,7 @@ type Config struct {
 	DBPath       string
 	WordlistPath string // "" means use the embedded English BIP-39 default
 	Template     string // raw flag value; "" means generate one
-	Position     int
+	Positions    string // raw --positions value; e.g. "0-11", "5", "0,3,7"
 	NAddresses   int
 	API          string
 	ScriptType   string
@@ -47,7 +47,7 @@ type Config struct {
 func Default() Config {
 	return Config{
 		DBPath:     DefaultDBPath,
-		Position:   DefaultPosition,
+		Positions:  DefaultPositions,
 		NAddresses: DefaultNAddresses,
 		API:        DefaultAPI,
 		ScriptType: DefaultScriptType,
@@ -87,10 +87,12 @@ var ValidAPIs = []string{"mempool", "blockstream"}
 
 // Validate enforces the cross-cutting invariants on c. It does NOT validate
 // that template words appear in the BIP-39 wordlist — the iterator does
-// that and gives a clearer error.
+// that and gives a clearer error. The --positions spec is parsed and
+// range-checked here too: every value must be in [0,11] and the spec must
+// resolve to at least one position.
 func (c Config) Validate() error {
-	if c.Position < 0 || c.Position > 11 {
-		return fmt.Errorf("position must be in [0,11], got %d", c.Position)
+	if _, err := ParsePositions(c.Positions); err != nil {
+		return fmt.Errorf("positions: %w", err)
 	}
 	if c.NAddresses < 1 {
 		return fmt.Errorf("addresses must be >= 1, got %d", c.NAddresses)

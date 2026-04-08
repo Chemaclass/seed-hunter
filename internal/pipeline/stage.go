@@ -61,20 +61,21 @@ func NewStats() *Stats {
 }
 
 // Config drives Run. Template/Position/ScriptType/NAddresses/API contribute
-// to the session signature used for resume; Rate, WordlistPath and Workers
-// are persisted as session metadata so a later "seed-hunter run" with no
-// flags can recover them.
+// to the session signature used for resume; Rate, WordlistPath, Workers and
+// PositionsSpec are persisted as session metadata so a later
+// "seed-hunter run" with no flags can recover them.
 type Config struct {
-	Template     []string
-	Position     int
-	ScriptType   derivation.ScriptType
-	NAddresses   int
-	API          string
-	Rate         float64 // persisted to sessions for resume convenience
-	WordlistPath string  // persisted to sessions for resume convenience
-	Workers      int     // number of parallel deriver goroutines (>= 1)
-	BatchSize    int     // sqlite insert batch size; defaults to 50 if <= 0
-	Fresh        bool    // ignore any paused session for this signature
+	Template      []string
+	Position      int
+	ScriptType    derivation.ScriptType
+	NAddresses    int
+	API           string
+	Rate          float64 // persisted to sessions for resume convenience
+	WordlistPath  string  // persisted to sessions for resume convenience
+	Workers       int     // number of parallel deriver goroutines (>= 1)
+	PositionsSpec string  // raw --positions value the cmd layer sweeps
+	BatchSize     int     // sqlite insert batch size; defaults to 50 if <= 0
+	Fresh         bool    // ignore any paused session for this signature
 }
 
 // Dependencies bundles the collaborators Run needs. Tests inject fakes here.
