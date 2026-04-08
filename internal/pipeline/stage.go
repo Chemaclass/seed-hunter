@@ -1,0 +1,90 @@
+// Package pipeline wires the BIP-39 iterator, the address deriver, the
+// balance checker, and the SQLite repository together as a stop-and-resume
+// channel pipeline.
+package pipeline
+
+import (
+	"context"
+	"sync/atomic"
+	"time"
+
+	"github.com/Chemaclass/seed-hunter/internal/derivation"
+	"github.com/Chemaclass/seed-hunter/internal/storage"
+)
+
+// Candidate is the unit emitted by the generator stage. WordIndex is the
+// position in the BIP-39 wordlist of the substituted word (0..2047).
+type Candidate struct {
+	WordIndex int
+	Mnemonic  string
+}
+
+// Derived is the unit emitted by the deriver stage. ValidChecksum is false
+// for mnemonics that fail the BIP-39 checksum (those still pass through the
+// pipeline so we can log them, but no balance lookup is attempted).
+type Derived struct {
+	Candidate
+	Addresses     []string
+	ValidChecksum bool
+}
+
+// Checked is the unit emitted by the checker stage. BalanceSats is zero when
+// the checksum was invalid (the balance lookup is skipped) or when the
+// checker reported no funds.
+type Checked struct {
+	Derived
+	BalanceSats int64
+	CheckErr    error
+	DurationMS  int64
+	CheckedAt   time.Time
+}
+
+// Stats is the live counter snapshot the dashboard reads while a run is in
+// flight. All counters are atomic so the dashboard goroutine can read them
+// without coordinating with the pipeline.
+type Stats struct {
+	SessionID int64
+	StartedAt time.Time
+	ResumedAt int // word index the current run picked up at; -1 if fresh
+
+	Processed      atomic.Int64 // candidates processed in THIS run
+	ValidMnemonics atomic.Int64
+	Hits           atomic.Int64
+	Errors         atomic.Int64
+}
+
+// NewStats returns a fresh Stats with StartedAt=now and ResumedAt=-1.
+func NewStats() *Stats {
+	return &Stats{StartedAt: time.Now(), ResumedAt: -1}
+}
+
+// Config drives Run. The Template/Position/ScriptType/NAddresses fields
+// match the corresponding CLI flags; API is included only because it is part
+// of the session signature used for resume.
+type Config struct {
+	Template   []string
+	Position   int
+	ScriptType derivation.ScriptType
+	NAddresses int
+	API        string
+	BatchSize  int  // sqlite insert batch size; defaults to 50 if <= 0
+	Fresh      bool // ignore any paused session for this signature
+}
+
+// Dependencies bundles the collaborators Run needs. Tests inject fakes here.
+type Dependencies struct {
+	Repository *storage.Repository
+	Deriver    Deriver
+	Checker    Checker
+}
+
+// Deriver is the subset of derivation.Deriver Run uses. Defining it here lets
+// tests inject a fake without pulling btcsuite into the test path.
+type Deriver interface {
+	Derive(mnemonic string, n int, scriptType derivation.ScriptType) ([]string, error)
+}
+
+// Checker is the subset of checker.BalanceChecker Run uses.
+type Checker interface {
+	CheckAddresses(ctx context.Context, addresses []string) (int64, error)
+}
