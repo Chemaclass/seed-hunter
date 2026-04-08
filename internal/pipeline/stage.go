@@ -61,9 +61,9 @@ func NewStats() *Stats {
 }
 
 // Config drives Run. Template/Position/ScriptType/NAddresses/API contribute
-// to the session signature used for resume; Rate and WordlistPath are
-// persisted as session metadata so a later "seed-hunter run" with no flags
-// can recover them.
+// to the session signature used for resume; Rate, WordlistPath and Workers
+// are persisted as session metadata so a later "seed-hunter run" with no
+// flags can recover them.
 type Config struct {
 	Template     []string
 	Position     int
@@ -72,6 +72,7 @@ type Config struct {
 	API          string
 	Rate         float64 // persisted to sessions for resume convenience
 	WordlistPath string  // persisted to sessions for resume convenience
+	Workers      int     // number of parallel deriver goroutines (>= 1)
 	BatchSize    int     // sqlite insert batch size; defaults to 50 if <= 0
 	Fresh        bool    // ignore any paused session for this signature
 }

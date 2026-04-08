@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Chemaclass/seed-hunter/internal/bip39"
@@ -59,11 +60,16 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		AddressType:  string(cfg.ScriptType),
 		NAddresses:   cfg.NAddresses,
 	}
+	workers := cfg.Workers
+	if workers < 1 {
+		workers = 1
+	}
 	init := storage.SessionInit{
 		SessionSignature: sig,
 		Template:         strings.Join(cfg.Template, " "),
 		Rate:             cfg.Rate,
 		WordlistPath:     cfg.WordlistPath,
+		Workers:          workers,
 	}
 
 	if cfg.Fresh {
@@ -114,8 +120,16 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		}
 	}
 
-	// Wire the four stages.
-	candidates := make(chan Candidate, batchSize)
+	// Wire the five stages:
+	//   generator → candidates → [N derivers] → derivedRaw → reorder → derived → checker → checked → logger
+	//
+	// The reorder stage is what makes parallel derivers safe for resume:
+	// even though the N workers may finish out of order, the reorder goroutine
+	// emits items in strict word_index order, so the checker → logger
+	// committed prefix advances monotonically and last_word_index is always
+	// the highest contiguous index processed.
+	candidates := make(chan Candidate, max(batchSize, workers*2))
+	derivedRaw := make(chan Derived, max(batchSize, workers*2))
 	derived := make(chan Derived, batchSize)
 	checked := make(chan Checked, batchSize)
 
@@ -125,9 +139,26 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		genErrCh <- generate(ctx, cfg, deps.Iterator, startIdx, candidates)
 	}()
 
+	// Spawn N derivers. They share the candidates channel and write to
+	// derivedRaw. derivedRaw is closed once every worker has returned.
+	var derivWG sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		derivWG.Add(1)
+		go func() {
+			defer derivWG.Done()
+			derive(ctx, cfg, deps.Deriver, candidates, derivedRaw)
+		}()
+	}
+	go func() {
+		derivWG.Wait()
+		close(derivedRaw)
+	}()
+
+	// Reorder: takes Derived in any order, emits in word_index order
+	// starting from startIdx. Uses a small bounded pending map (≤ workers).
 	go func() {
 		defer close(derived)
-		derive(ctx, cfg, deps.Deriver, candidates, derived)
+		reorder(ctx, startIdx, derivedRaw, derived)
 	}()
 
 	go func() {
@@ -245,6 +276,62 @@ func derive(ctx context.Context, cfg Config, d Deriver, in <-chan Candidate, out
 		case out <- Derived{Candidate: c, Addresses: addrs, ValidChecksum: valid}:
 		}
 	}
+}
+
+// reorder consumes Derived items in arbitrary order and emits them in
+// strictly ascending WordIndex order, starting from startIdx.
+//
+// It exists because the deriver pool may finish work out of order: worker A
+// might complete index 5 before worker B finishes index 3. The downstream
+// checker → logger needs in-order delivery so the SQLite checkpoint
+// (last_word_index) always reflects the highest CONTIGUOUS index processed,
+// which is what makes resume correct after a Ctrl+C.
+//
+// pending holds at most `workers` items at any time (one per in-flight
+// worker), so memory is bounded and small.
+func reorder(ctx context.Context, startIdx int, in <-chan Derived, out chan<- Derived) {
+	next := startIdx
+	pending := make(map[int]Derived)
+	emit := func(d Derived) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case out <- d:
+			return true
+		}
+	}
+	drainContiguous := func() bool {
+		for {
+			p, ok := pending[next]
+			if !ok {
+				return true
+			}
+			delete(pending, next)
+			if !emit(p) {
+				return false
+			}
+			next++
+		}
+	}
+	for d := range in {
+		if d.WordIndex == next {
+			if !emit(d) {
+				return
+			}
+			next++
+			if !drainContiguous() {
+				return
+			}
+		} else {
+			pending[d.WordIndex] = d
+		}
+	}
+	// Input closed: only flush items that are contiguous from `next`.
+	// Anything past a gap is dropped — those indices were not derived
+	// (probably because ctx was cancelled mid-run) and will be re-processed
+	// on the next "seed-hunter run" because the resume checkpoint will be
+	// the highest contiguous index actually emitted.
+	drainContiguous()
 }
 
 // check consumes Derived and emits Checked. Invalid mnemonics short-circuit

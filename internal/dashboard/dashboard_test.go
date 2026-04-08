@@ -12,14 +12,14 @@ import (
 
 func baseMeta() Meta {
 	return Meta{
-		TemplateHash:  "9f2eab10cafebabedeadbeef",
-		Position:      3,
-		API:           "mempool",
-		ScriptType:    "segwit",
-		DeriveWorkers: 8,
-		APIWorkers:    2,
-		RateLimit:     2.0,
-		NAddresses:    3,
+		TemplateHash: "9f2eab10cafebabedeadbeef",
+		Position:     3,
+		API:          "mempool",
+		ScriptType:   "segwit",
+		Workers:      8,
+		APIWorkers:   2,
+		RateLimit:    2.0,
+		NAddresses:   3,
 	}
 }
 

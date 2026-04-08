@@ -193,8 +193,8 @@ when there is no previous session to inherit from (or when you pass
 | `--api` | `SEEDHUNTER_API` | `mempool` | `mempool` or `blockstream` |
 | `--script-type` | `SEEDHUNTER_SCRIPT_TYPE` | `segwit` | `segwit` (BIP-84, `bc1...`) or `legacy` (BIP-44, `1...`) |
 | `--rate` | — | `2` | API requests per second (be polite!) |
-| `--derive-workers` | — | `0` | Derivation goroutines (`0` = `runtime.NumCPU()`) |
-| `--api-workers` | — | `1` | API goroutines (single worker is plenty at low rates) |
+| `--workers` | — | `2` | Parallel deriver goroutines (≥ 1, see notes below) |
+| `--api-workers` | — | `1` | Reserved; the rate limiter currently serializes upstream calls |
 | `--batch-size` | — | `50` | SQLite insert batch size |
 | `--reset` | — | `false` | Ignore the most recent paused session and start over |
 | `--no-dashboard` | — | `false` | Disable the live dashboard (for non-TTY use) |
@@ -236,6 +236,51 @@ And we haven't even started yet:
 
 This is why "remember a phrase" is the only key-management story Bitcoin
 needs. The numbers do the work.
+
+## Parallelism (`--workers`)
+
+`seed-hunter` runs the BIP-32/44/84 derivation stage in `N` parallel
+goroutines (default `2`). The pipeline becomes:
+
+```
+generator → candidates → [N derivers] → reorder → checker → logger
+```
+
+The new **reorder** stage is what makes parallel derivers safe: even though
+the workers may finish out of order, the reorder buffer emits items in
+strict `word_index` order so the SQLite `last_word_index` checkpoint always
+reflects the highest **contiguous** index processed. This means resume
+after `Ctrl+C` is correct regardless of `--workers`.
+
+```sh
+./seed-hunter run --workers 8        # 8 parallel derivers
+```
+
+Pick whatever `--workers` value you like (1 → `runtime.NumCPU()` is
+sensible). The dashboard's `attempts/s` rate will scale roughly linearly
+with this number — which makes the educational ETA-in-years figure go
+**down**, not up.
+
+### Honest performance note
+
+Parallel derivers do **not** beat the rate limiter. ~15 of every 16 BIP-39
+candidates fail the checksum and skip the API entirely; the ~1 in 16 that
+*do* hit the API are still capped at `--rate` requests per second. So
+`--workers 16` makes the dashboard look ~16× faster on the candidate-rate
+line, but the irreducible per-position wall time is still
+`(2048 / 16) / rate ≈ 64 seconds` at the default `--rate 2`.
+
+This is the educational point: even if you parallelize the cheap stage to
+infinity, the slow stage is still slow, and the **full keyspace ETA never
+gets meaningfully smaller**. Try it:
+
+```sh
+./seed-hunter run --workers 1   # ETA full key ≈ 10^39 years
+./seed-hunter run --workers 16  # ETA full key ≈ 10^38 years
+./seed-hunter run --workers 64  # ETA full key ≈ 10^37 years
+```
+
+You can throw all the cores in the universe at it. You will not finish.
 
 ## Architecture
 

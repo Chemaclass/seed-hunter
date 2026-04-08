@@ -15,46 +15,46 @@ import (
 
 // Default values reused by both flag wiring and tests.
 const (
-	DefaultDBPath        = "./seed-hunter.db"
-	DefaultPosition      = 0
-	DefaultNAddresses    = 1
-	DefaultAPI           = "mempool"
-	DefaultScriptType    = "segwit"
-	DefaultRate          = 2.0
-	DefaultDeriveWorkers = 0 // 0 means runtime.NumCPU() at the call site
-	DefaultAPIWorkers    = 1
-	DefaultBatchSize     = 50
+	DefaultDBPath     = "./seed-hunter.db"
+	DefaultPosition   = 0
+	DefaultNAddresses = 1
+	DefaultAPI        = "mempool"
+	DefaultScriptType = "segwit"
+	DefaultRate       = 2.0
+	DefaultWorkers    = 2 // parallel deriver goroutines
+	DefaultAPIWorkers = 1
+	DefaultBatchSize  = 50
 )
 
 // Config is the validated user-supplied configuration for one CLI invocation.
 type Config struct {
-	DBPath        string
-	WordlistPath  string // "" means use the embedded English BIP-39 default
-	Template      string // raw flag value; "" means generate one
-	Position      int
-	NAddresses    int
-	API           string
-	ScriptType    string
-	Rate          float64
-	DeriveWorkers int
-	APIWorkers    int
-	BatchSize     int
-	Reset         bool // ignore the most-recent paused session and start fresh
-	NoDashboard   bool
+	DBPath       string
+	WordlistPath string // "" means use the embedded English BIP-39 default
+	Template     string // raw flag value; "" means generate one
+	Position     int
+	NAddresses   int
+	API          string
+	ScriptType   string
+	Rate         float64
+	Workers      int // parallel deriver goroutines
+	APIWorkers   int // currently always 1 (rate limiter serializes upstream)
+	BatchSize    int
+	Reset        bool // ignore the most-recent paused session and start fresh
+	NoDashboard  bool
 }
 
 // Default returns a Config populated with the package defaults.
 func Default() Config {
 	return Config{
-		DBPath:        DefaultDBPath,
-		Position:      DefaultPosition,
-		NAddresses:    DefaultNAddresses,
-		API:           DefaultAPI,
-		ScriptType:    DefaultScriptType,
-		Rate:          DefaultRate,
-		DeriveWorkers: DefaultDeriveWorkers,
-		APIWorkers:    DefaultAPIWorkers,
-		BatchSize:     DefaultBatchSize,
+		DBPath:     DefaultDBPath,
+		Position:   DefaultPosition,
+		NAddresses: DefaultNAddresses,
+		API:        DefaultAPI,
+		ScriptType: DefaultScriptType,
+		Rate:       DefaultRate,
+		Workers:    DefaultWorkers,
+		APIWorkers: DefaultAPIWorkers,
+		BatchSize:  DefaultBatchSize,
 	}
 }
 
@@ -100,6 +100,9 @@ func (c Config) Validate() error {
 	}
 	if c.BatchSize < 1 {
 		return fmt.Errorf("batch-size must be >= 1, got %d", c.BatchSize)
+	}
+	if c.Workers < 1 {
+		return fmt.Errorf("workers must be >= 1, got %d", c.Workers)
 	}
 	if !contains(ValidAPIs, c.API) {
 		return fmt.Errorf("api must be one of %v, got %q", ValidAPIs, c.API)

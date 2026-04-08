@@ -46,14 +46,14 @@ const clearScreen = "\033[H\033[2J"
 // by the pipeline after BeginSession runs and are read from *pipeline.Stats
 // at frame time.)
 type Meta struct {
-	TemplateHash  string // already hashed; the dashboard never sees plaintext words
-	Position      int
-	API           string
-	ScriptType    string // "segwit" or "legacy"
-	DeriveWorkers int
-	APIWorkers    int
-	RateLimit     float64 // requests per second
-	NAddresses    int
+	TemplateHash string // already hashed; the dashboard never sees plaintext words
+	Position     int
+	API          string
+	ScriptType   string // "segwit" or "legacy"
+	Workers      int    // parallel deriver goroutines
+	APIWorkers   int
+	RateLimit    float64 // requests per second
+	NAddresses   int
 }
 
 // Frame is a single rendered snapshot of the dashboard. Render consumes a
@@ -90,7 +90,7 @@ func Render(f Frame) string {
 	fmt.Fprintf(&b, "template hash : %-20s script   : %s\n",
 		truncateHash(f.Meta.TemplateHash), f.Meta.ScriptType)
 	fmt.Fprintf(&b, "position      : %-20d workers  : derive=%d api=%d\n",
-		f.Meta.Position, f.Meta.DeriveWorkers, f.Meta.APIWorkers)
+		f.Meta.Position, f.Meta.Workers, f.Meta.APIWorkers)
 	fmt.Fprintf(&b, "rate limit    : %.2f req/s          addresses/candidate : %d\n",
 		f.Meta.RateLimit, f.Meta.NAddresses)
 	b.WriteString("\n")

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     n_addresses     INTEGER NOT NULL,
     rate            REAL    NOT NULL DEFAULT 0,
     wordlist_path   TEXT    NOT NULL DEFAULT '',
+    workers         INTEGER NOT NULL DEFAULT 1,
     last_word_index INTEGER NOT NULL DEFAULT -1,
     status          TEXT    NOT NULL DEFAULT 'running'
 );

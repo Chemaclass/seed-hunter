@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -59,8 +58,8 @@ func init() {
 	f.StringVar(&runFlags.API, "api", runFlags.API, "balance API: mempool|blockstream")
 	f.StringVar(&runFlags.ScriptType, "script-type", runFlags.ScriptType, "address type: segwit|legacy")
 	f.Float64Var(&runFlags.Rate, "rate", runFlags.Rate, "API requests per second")
-	f.IntVar(&runFlags.DeriveWorkers, "derive-workers", runFlags.DeriveWorkers, "number of derivation workers (0 = NumCPU)")
-	f.IntVar(&runFlags.APIWorkers, "api-workers", runFlags.APIWorkers, "number of API workers")
+	f.IntVar(&runFlags.Workers, "workers", runFlags.Workers, "number of parallel deriver goroutines (>= 1)")
+	f.IntVar(&runFlags.APIWorkers, "api-workers", runFlags.APIWorkers, "number of API workers (currently always serialised by the rate limiter)")
 	f.IntVar(&runFlags.BatchSize, "batch-size", runFlags.BatchSize, "SQLite insert batch size")
 	f.BoolVar(&runFlags.Reset, "reset", false, "ignore the most recent paused session and start a brand-new one")
 	f.BoolVar(&runFlags.NoDashboard, "no-dashboard", false, "disable the live dashboard (useful for non-TTY use)")
@@ -117,10 +116,8 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	deriveWorkers := cfg.DeriveWorkers
-	if deriveWorkers <= 0 {
-		deriveWorkers = runtime.NumCPU()
-	}
+	// Workers is validated >= 1 by config.Validate above; nothing more to do.
+	workers := cfg.Workers
 
 	baseChecker, err := checker.New(checker.Provider(cfg.API), &http.Client{Timeout: 15 * time.Second})
 	if err != nil {
@@ -136,6 +133,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 		API:          cfg.API,
 		Rate:         cfg.Rate,
 		WordlistPath: cfg.WordlistPath,
+		Workers:      workers,
 		BatchSize:    cfg.BatchSize,
 		Fresh:        cfg.Reset,
 	}
@@ -154,7 +152,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 		"script_type", cfg.ScriptType,
 		"addresses", cfg.NAddresses,
 		"rate", cfg.Rate,
-		"derive_workers", deriveWorkers,
+		"workers", workers,
 		"api_workers", cfg.APIWorkers,
 		"batch_size", cfg.BatchSize,
 		"reset", cfg.Reset,
@@ -162,14 +160,14 @@ func runE(cmd *cobra.Command, _ []string) error {
 
 	if !cfg.NoDashboard {
 		go dashboard.Run(ctx, cmd.OutOrStdout(), dashboard.Meta{
-			TemplateHash:  hashTemplate(template),
-			Position:      cfg.Position,
-			API:           cfg.API,
-			ScriptType:    cfg.ScriptType,
-			DeriveWorkers: deriveWorkers,
-			APIWorkers:    cfg.APIWorkers,
-			RateLimit:     cfg.Rate,
-			NAddresses:    cfg.NAddresses,
+			TemplateHash: hashTemplate(template),
+			Position:     cfg.Position,
+			API:          cfg.API,
+			ScriptType:   cfg.ScriptType,
+			Workers:      workers,
+			APIWorkers:   cfg.APIWorkers,
+			RateLimit:    cfg.Rate,
+			NAddresses:   cfg.NAddresses,
 		}, stats, 200*time.Millisecond)
 	}
 
@@ -215,6 +213,9 @@ func inheritFromSession(cfg *config.Config, last *storage.Session, flags *pflag.
 	}
 	if !flags.Changed("wordlist") {
 		cfg.WordlistPath = last.WordlistPath
+	}
+	if !flags.Changed("workers") && last.Workers > 0 {
+		cfg.Workers = last.Workers
 	}
 }
 
