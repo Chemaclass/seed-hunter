@@ -40,12 +40,12 @@ type Checked struct {
 }
 
 // Stats is the live counter snapshot the dashboard reads while a run is in
-// flight. All counters are atomic so the dashboard goroutine can read them
-// without coordinating with the pipeline.
+// flight. All mutable fields are atomic so the dashboard goroutine can read
+// them without coordinating with the pipeline.
 type Stats struct {
-	SessionID int64
-	StartedAt time.Time
-	ResumedAt int // word index the current run picked up at; -1 if fresh
+	SessionID atomic.Int64
+	ResumedAt atomic.Int64 // word index the current run picked up at; -1 if fresh
+	StartedAt time.Time    // set once before the run starts; immutable after
 
 	Processed      atomic.Int64 // candidates processed in THIS run
 	ValidMnemonics atomic.Int64
@@ -55,7 +55,9 @@ type Stats struct {
 
 // NewStats returns a fresh Stats with StartedAt=now and ResumedAt=-1.
 func NewStats() *Stats {
-	return &Stats{StartedAt: time.Now(), ResumedAt: -1}
+	s := &Stats{StartedAt: time.Now()}
+	s.ResumedAt.Store(-1)
+	return s
 }
 
 // Config drives Run. The Template/Position/ScriptType/NAddresses fields

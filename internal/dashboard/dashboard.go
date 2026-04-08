@@ -42,9 +42,10 @@ const clearScreen = "\033[H\033[2J"
 
 // Meta carries the static metadata that is rendered above the live
 // counters. It is supplied once before the run begins and does not change
-// across frames.
+// across frames. (SessionID and ResumedAt are NOT here — they are populated
+// by the pipeline after BeginSession runs and are read from *pipeline.Stats
+// at frame time.)
 type Meta struct {
-	SessionID     int64
 	TemplateHash  string // already hashed; the dashboard never sees plaintext words
 	Position      int
 	API           string
@@ -60,6 +61,7 @@ type Meta struct {
 // *pipeline.Stats on every tick.
 type Frame struct {
 	Meta           Meta
+	SessionID      int64
 	Resumed        bool
 	ResumedAt      int // word index this run picked up at, -1 if fresh
 	Processed      int64
@@ -80,7 +82,7 @@ func Render(f Frame) string {
 	b.WriteString("─────────────────────────────────────────────────\n")
 
 	// Session/meta block.
-	sessionLabel := fmt.Sprintf("session #%d", f.Meta.SessionID)
+	sessionLabel := fmt.Sprintf("session #%d", f.SessionID)
 	if f.Resumed {
 		sessionLabel += " (resumed)"
 	}
@@ -182,17 +184,17 @@ func paint(w io.Writer, meta Meta, s *pipeline.Stats) {
 // Frame. The resumed flag is derived from the ResumedAt sentinel (-1 means
 // fresh run).
 func snapshot(meta Meta, s *pipeline.Stats) Frame {
-	resumed := s.ResumedAt >= 0
-	elapsed := time.Since(s.StartedAt)
+	resumedAt := int(s.ResumedAt.Load())
 	return Frame{
 		Meta:           meta,
-		Resumed:        resumed,
-		ResumedAt:      s.ResumedAt,
+		SessionID:      s.SessionID.Load(),
+		Resumed:        resumedAt >= 0,
+		ResumedAt:      resumedAt,
 		Processed:      s.Processed.Load(),
 		ValidMnemonics: s.ValidMnemonics.Load(),
 		Hits:           s.Hits.Load(),
 		Errors:         s.Errors.Load(),
-		Elapsed:        elapsed,
+		Elapsed:        time.Since(s.StartedAt),
 	}
 }
 

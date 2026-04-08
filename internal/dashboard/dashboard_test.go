@@ -12,7 +12,6 @@ import (
 
 func baseMeta() Meta {
 	return Meta{
-		SessionID:     4,
 		TemplateHash:  "9f2eab10cafebabedeadbeef",
 		Position:      3,
 		API:           "mempool",
@@ -21,6 +20,13 @@ func baseMeta() Meta {
 		APIWorkers:    2,
 		RateLimit:     2.0,
 		NAddresses:    3,
+	}
+}
+
+func baseFrame(meta Meta) Frame {
+	return Frame{
+		Meta:      meta,
+		SessionID: 4,
 	}
 }
 
@@ -161,7 +167,7 @@ func TestRenderShowsTruncatedTemplateHash(t *testing.T) {
 
 func TestRunRepaintLoopWritesAtLeastOneFrameThenStops(t *testing.T) {
 	stats := pipeline.NewStats()
-	stats.SessionID = 7
+	stats.SessionID.Store(7)
 	stats.Processed.Store(42)
 	stats.ValidMnemonics.Store(40)
 	stats.Hits.Store(0)

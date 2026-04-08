@@ -100,11 +100,11 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 	}
 
 	if stats != nil {
-		stats.SessionID = sessionID
+		stats.SessionID.Store(sessionID)
 		if wasResumed {
-			stats.ResumedAt = resumeIdx
+			stats.ResumedAt.Store(int64(resumeIdx))
 		} else {
-			stats.ResumedAt = -1
+			stats.ResumedAt.Store(-1)
 		}
 	}
 
