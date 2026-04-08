@@ -6,6 +6,7 @@ require (
 	github.com/btcsuite/btcd v0.25.0
 	github.com/btcsuite/btcd/btcutil v1.1.6
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	github.com/tyler-smith/go-bip39 v1.1.0
 	golang.org/x/time v0.15.0
 	modernc.org/sqlite v1.48.1
@@ -21,7 +22,6 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/crypto v0.25.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	modernc.org/libc v1.70.0 // indirect
