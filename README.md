@@ -282,6 +282,57 @@ gets meaningfully smaller**. Try it:
 
 You can throw all the cores in the universe at it. You will not finish.
 
+### Finding the optimal `--workers` value for your machine
+
+The default `--workers 2` is intentionally conservative — it works
+everywhere from a Raspberry Pi to a 64-core workstation. To find the
+**actual** sweet spot for your hardware, run the built-in benchmark:
+
+```sh
+go test -bench=BenchmarkRunWorkers -benchtime=2x -run=^$ ./internal/pipeline/
+```
+
+That command runs one full 2048-candidate pipeline pass with the **real**
+BIP-32/44/84 deriver and a no-op checker (no network, no rate limit) for
+several `--workers` values, and prints the wall time for each. Look for
+the row where adding more workers stops cutting the time — that's your
+sweet spot.
+
+Sample output on an Apple M4 Pro (10 performance + 4 efficiency cores):
+
+```
+BenchmarkRunWorkers/workers=1-14   2  74_508_166 ns/op   ← 1.00× baseline
+BenchmarkRunWorkers/workers=2-14   2  39_913_375 ns/op   ← 1.87×
+BenchmarkRunWorkers/workers=4-14   2  22_155_521 ns/op   ← 3.36×
+BenchmarkRunWorkers/workers=6-14   2  16_408_125 ns/op   ← 4.54×
+BenchmarkRunWorkers/workers=8-14   2  13_552_500 ns/op   ← 5.50×
+BenchmarkRunWorkers/workers=10-14  2  12_653_104 ns/op   ← 5.87×  ← sweet spot
+BenchmarkRunWorkers/workers=12-14  2  12_670_500 ns/op   ← 5.87×  (flat)
+BenchmarkRunWorkers/workers=14-14  2  12_870_730 ns/op   ← 5.78×  (slight drop)
+BenchmarkRunWorkers/workers=16-14  2  13_687_042 ns/op   ← 5.44×  (worse)
+```
+
+For this machine, **`--workers 10` is optimal** — exactly the number of
+performance cores. Beyond that the run spills onto efficiency cores and
+the reorder/checker serialization points eat the gains.
+
+#### Rule of thumb
+
+- On **Apple Silicon (M-series)**: pick the number of **performance** cores
+  (`sysctl -n hw.perflevel0.physicalcpu`). The realistic ceiling is about
+  6× the single-worker rate.
+- On **Intel/AMD with SMT**: start with the number of **physical** cores
+  (`getconf _NPROCESSORS_ONLN` for logical, `lscpu | grep '^Core(s)'` for
+  physical). Hyperthreading helps a little but the per-thread gains are
+  small.
+- On a **VPS or container** with shared CPUs: stay at the default `2` —
+  you have no idea what else is on the host, and being a polite neighbour
+  matters more than the marginal speedup.
+
+Once you find your number, set it once and forget it — the value gets
+**persisted in the session row** alongside everything else, so future
+`seed-hunter run` invocations inherit it automatically.
+
 ## Architecture
 
 ```

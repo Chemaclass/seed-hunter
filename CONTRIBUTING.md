@@ -75,6 +75,22 @@ coverage-padding tests for trivial accessors. A good test should:
 - Run quickly. Use `httptest` for upstream APIs and a temp directory for SQLite.
 - Be deterministic — no real network, no real time-of-day dependence beyond `time.Sleep` tolerances.
 
+### Benchmarks
+
+`internal/pipeline/pipeline_bench_test.go` ships a `BenchmarkRunWorkers`
+that measures the wall-clock cost of one full 2048-candidate pipeline pass
+at several `--workers` values, using the **real** BIP-32/44/84 deriver and
+a no-op checker (no network, no rate limit). It exists so users can pick
+the optimal `--workers` value for their hardware:
+
+```sh
+go test -bench=BenchmarkRunWorkers -benchtime=2x -run=^$ ./internal/pipeline/
+```
+
+If you change anything in the pipeline hot path (the `derive`, `reorder`,
+`check`, or `logResults` functions), please re-run this benchmark and
+include before/after numbers in your PR description.
+
 ### Style
 
 - `make lint test` must be green before requesting review.
