@@ -3,10 +3,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     started_at_unix INTEGER NOT NULL,
     ended_at_unix   INTEGER,
     template_hash   TEXT    NOT NULL,
+    template        TEXT    NOT NULL DEFAULT '',
     position        INTEGER NOT NULL,
     api             TEXT    NOT NULL,
     address_type    TEXT    NOT NULL,
     n_addresses     INTEGER NOT NULL,
+    rate            REAL    NOT NULL DEFAULT 0,
+    wordlist_path   TEXT    NOT NULL DEFAULT '',
     last_word_index INTEGER NOT NULL DEFAULT -1,
     status          TEXT    NOT NULL DEFAULT 'running'
 );

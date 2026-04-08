@@ -10,7 +10,6 @@ seed-hunter
 *.db-journal
 *.db-wal
 *.db-shm
-*.db.template
 
 # Coverage
 coverage.out

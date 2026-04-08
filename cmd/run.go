@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	extbip39 "github.com/tyler-smith/go-bip39"
 
 	"github.com/Chemaclass/seed-hunter/config"
@@ -30,8 +31,19 @@ var runFlags = config.Default()
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Start the brute-force loop (single --position, 2048 candidates)",
-	RunE:  runE,
+	Short: "Start (or resume) the brute-force loop",
+	Long: `Run the brute-force loop.
+
+With no flags, "seed-hunter run" picks up the most recent paused session
+from the database and resumes it with all of its parameters intact —
+template, position, addresses, api, script type, rate, wordlist. The DB is
+the source of truth.
+
+Pass any flag to override the corresponding parameter for this run; the
+flags you don't pass are inherited from the last paused session. Pass
+--reset to ignore the last paused session and start a brand-new one (a
+fresh template will be auto-generated unless you also pass --template).`,
+	RunE: runE,
 }
 
 func init() {
@@ -41,7 +53,7 @@ func init() {
 	f := runCmd.Flags()
 	f.StringVar(&runFlags.DBPath, "db", runFlags.DBPath, "SQLite database path")
 	f.StringVar(&runFlags.WordlistPath, "wordlist", runFlags.WordlistPath, "path to a 2048-word BIP-39 wordlist file (empty = embedded English)")
-	f.StringVar(&runFlags.Template, "template", runFlags.Template, "12-word BIP-39 template (empty = generate a random demo seed)")
+	f.StringVar(&runFlags.Template, "template", runFlags.Template, "12-word BIP-39 template (empty = inherit from last session, or generate a random demo seed)")
 	f.IntVar(&runFlags.Position, "position", runFlags.Position, "word position to mutate (0-11)")
 	f.IntVar(&runFlags.NAddresses, "addresses", runFlags.NAddresses, "number of receiving addresses to derive per candidate")
 	f.StringVar(&runFlags.API, "api", runFlags.API, "balance API: mempool|blockstream")
@@ -50,21 +62,46 @@ func init() {
 	f.IntVar(&runFlags.DeriveWorkers, "derive-workers", runFlags.DeriveWorkers, "number of derivation workers (0 = NumCPU)")
 	f.IntVar(&runFlags.APIWorkers, "api-workers", runFlags.APIWorkers, "number of API workers")
 	f.IntVar(&runFlags.BatchSize, "batch-size", runFlags.BatchSize, "SQLite insert batch size")
-	f.BoolVar(&runFlags.Fresh, "fresh", false, "ignore any paused session for this signature")
+	f.BoolVar(&runFlags.Reset, "reset", false, "ignore the most recent paused session and start a brand-new one")
 	f.BoolVar(&runFlags.NoDashboard, "no-dashboard", false, "disable the live dashboard (useful for non-TTY use)")
 }
 
 func runE(cmd *cobra.Command, _ []string) error {
 	cfg := runFlags
+
+	// Open the repo first so we can look up the last paused session BEFORE
+	// validating cfg — we need to potentially inherit fields from it.
+	repo, err := storage.Open(cfg.DBPath)
+	if err != nil {
+		return fmt.Errorf("open db: %w", err)
+	}
+	defer func() { _ = repo.Close() }()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if !cfg.Reset {
+		last, err := repo.LatestResumable(ctx)
+		if err != nil {
+			return fmt.Errorf("lookup last session: %w", err)
+		}
+		if last != nil {
+			inheritFromSession(&cfg, last, cmd.Flags())
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"Resuming session #%d at word index %d (use --reset to start over).\n",
+				last.ID, last.LastWordIndex+1,
+			)
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Load the wordlist FIRST: it influences both the iterator (which words
-	// it yields) and the underlying tyler-smith/go-bip39 library (which uses
-	// a process-global wordlist for checksum validation and for generating
-	// the random demo mnemonic). Binding both to the same source guarantees
-	// the iterator and the deriver always agree on the words.
+	// Load the wordlist AFTER inherit so an inherited WordlistPath wins. The
+	// underlying tyler-smith/go-bip39 library uses a process-global wordlist
+	// for checksum validation and PBKDF2 seed derivation; binding it to the
+	// loaded list keeps the iterator and the deriver in sync.
 	words, err := wordlist.Load(cfg.WordlistPath)
 	if err != nil {
 		return fmt.Errorf("load wordlist: %w", err)
@@ -75,22 +112,15 @@ func runE(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("build iterator: %w", err)
 	}
 
-	template, generated, err := resolveTemplate(cfg.Template, sidecarPath(cfg.DBPath), cmd.OutOrStdout(), generateRandomMnemonic)
+	template, err := resolveTemplate(cfg.Template, cmd.OutOrStdout(), generateRandomMnemonic)
 	if err != nil {
 		return err
 	}
-	_ = generated // captured for the resume hint below
 
 	deriveWorkers := cfg.DeriveWorkers
 	if deriveWorkers <= 0 {
 		deriveWorkers = runtime.NumCPU()
 	}
-
-	repo, err := storage.Open(cfg.DBPath)
-	if err != nil {
-		return fmt.Errorf("open db: %w", err)
-	}
-	defer func() { _ = repo.Close() }()
 
 	baseChecker, err := checker.New(checker.Provider(cfg.API), &http.Client{Timeout: 15 * time.Second})
 	if err != nil {
@@ -99,13 +129,15 @@ func runE(cmd *cobra.Command, _ []string) error {
 	rateLimited := checker.WithRateLimit(baseChecker, cfg.Rate)
 
 	pipelineCfg := pipeline.Config{
-		Template:   template,
-		Position:   cfg.Position,
-		ScriptType: derivation.ScriptType(cfg.ScriptType),
-		NAddresses: cfg.NAddresses,
-		API:        cfg.API,
-		BatchSize:  cfg.BatchSize,
-		Fresh:      cfg.Fresh,
+		Template:     template,
+		Position:     cfg.Position,
+		ScriptType:   derivation.ScriptType(cfg.ScriptType),
+		NAddresses:   cfg.NAddresses,
+		API:          cfg.API,
+		Rate:         cfg.Rate,
+		WordlistPath: cfg.WordlistPath,
+		BatchSize:    cfg.BatchSize,
+		Fresh:        cfg.Reset,
 	}
 	deps := pipeline.Dependencies{
 		Repository: repo,
@@ -116,9 +148,6 @@ func runE(cmd *cobra.Command, _ []string) error {
 
 	stats := pipeline.NewStats()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	slog.Info("starting run",
 		"position", cfg.Position,
 		"api", cfg.API,
@@ -128,7 +157,7 @@ func runE(cmd *cobra.Command, _ []string) error {
 		"derive_workers", deriveWorkers,
 		"api_workers", cfg.APIWorkers,
 		"batch_size", cfg.BatchSize,
-		"fresh", cfg.Fresh,
+		"reset", cfg.Reset,
 	)
 
 	if !cfg.NoDashboard {
@@ -155,86 +184,66 @@ func runE(cmd *cobra.Command, _ []string) error {
 		res.FinalStatus, res.SessionID, res.EndIndex, res.WasResumed, res.WasCancelled,
 	)
 	if res.FinalStatus == storage.StatusPaused {
-		printResumeHint(cmd.OutOrStdout(), template, cfg)
+		fmt.Fprintln(cmd.OutOrStdout(),
+			"Run 'seed-hunter run' (no flags) to resume from where this stopped.")
 	}
 	return nil
 }
 
-// printResumeHint emits a copy-paste-ready command that re-runs the same
-// session signature. It is shown only when the run paused, so the user
-// always knows exactly how to continue. The template is included in full
-// so resume works even if the sidecar file is deleted.
-func printResumeHint(out io.Writer, template []string, cfg config.Config) {
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "To resume this session manually, run:")
-	fmt.Fprintf(out,
-		"  seed-hunter run --template %q --position %d --addresses %d --api %s --script-type %s --rate %g\n",
-		strings.Join(template, " "),
-		cfg.Position,
-		cfg.NAddresses,
-		cfg.API,
-		cfg.ScriptType,
-		cfg.Rate,
-	)
+// inheritFromSession overlays fields from last onto cfg, but only for flags
+// the user did NOT explicitly set on the command line. The user's --template,
+// --position, etc. always win; everything else inherits from the DB so that
+// "seed-hunter run" with zero flags is enough to continue the previous run.
+func inheritFromSession(cfg *config.Config, last *storage.Session, flags *pflag.FlagSet) {
+	if !flags.Changed("template") && last.Template != "" {
+		cfg.Template = last.Template
+	}
+	if !flags.Changed("position") {
+		cfg.Position = last.Position
+	}
+	if !flags.Changed("addresses") {
+		cfg.NAddresses = last.NAddresses
+	}
+	if !flags.Changed("api") {
+		cfg.API = last.API
+	}
+	if !flags.Changed("script-type") {
+		cfg.ScriptType = last.AddressType
+	}
+	if !flags.Changed("rate") && last.Rate > 0 {
+		cfg.Rate = last.Rate
+	}
+	if !flags.Changed("wordlist") {
+		cfg.WordlistPath = last.WordlistPath
+	}
 }
 
 // resolveTemplate returns the 12-word template the run will iterate over.
 //
-// Resolution order, in priority:
-//  1. raw (the --template flag) — if non-empty, use it verbatim.
-//  2. sidecarPath — if a sidecar file exists at that path with a 12-word
-//     mnemonic, use it. This is what makes "Ctrl+C, then run again" resume
-//     the SAME random demo seed instead of generating a new one.
-//  3. otherwise call generate() to produce a fresh random mnemonic, write
-//     it to sidecarPath for next time, and print the "do not fund" notice.
-//
-// The bool return is `generated` — true only when this call produced a
-// brand-new random mnemonic. It's currently informational; callers can use
-// it to decide whether to print extra context.
-func resolveTemplate(raw, sidecarPath string, out io.Writer, generate func() (string, error)) (template []string, generated bool, err error) {
+// If raw is non-empty it is parsed and returned (the user supplied
+// --template, possibly via inheritance from the last session). Otherwise
+// generate() produces a fresh random mnemonic and the "DO NOT FUND" notice
+// is printed to out.
+func resolveTemplate(raw string, out io.Writer, generate func() (string, error)) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw != "" {
 		words := strings.Fields(raw)
 		if len(words) != 12 {
-			return nil, false, fmt.Errorf("template must be 12 words, got %d", len(words))
+			return nil, fmt.Errorf("template must be 12 words, got %d", len(words))
 		}
-		return words, false, nil
-	}
-
-	if sidecarPath != "" {
-		if data, readErr := os.ReadFile(sidecarPath); readErr == nil {
-			words := strings.Fields(strings.TrimSpace(string(data)))
-			if len(words) == 12 {
-				fmt.Fprintf(out, "Reusing saved demo seed from %s (delete the file or pass --template to override).\n",
-					sidecarPath)
-				return words, false, nil
-			}
-			// File exists but is malformed — fall through and regenerate.
-			fmt.Fprintf(out, "Sidecar %s exists but is not a 12-word mnemonic; regenerating.\n",
-				sidecarPath)
-		}
+		return words, nil
 	}
 
 	mnemonic, err := generate()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	fmt.Fprintln(out, "──── demo seed (DO NOT FUND) ───────────────────────────────")
 	fmt.Fprintln(out, mnemonic)
 	fmt.Fprintln(out, "This mnemonic was generated locally for educational use only.")
 	fmt.Fprintln(out, "────────────────────────────────────────────────────────────")
-
-	if sidecarPath != "" {
-		if writeErr := os.WriteFile(sidecarPath, []byte(mnemonic+"\n"), 0o600); writeErr != nil {
-			fmt.Fprintf(out, "Warning: could not save demo seed to %s: %v\n", sidecarPath, writeErr)
-		} else {
-			fmt.Fprintf(out, "Saved to %s — re-run without --template to resume this session.\n",
-				sidecarPath)
-		}
-	}
-
-	return strings.Fields(mnemonic), true, nil
+	return strings.Fields(mnemonic), nil
 }
 
 // generateRandomMnemonic produces a fresh 12-word mnemonic using the
@@ -251,16 +260,6 @@ func generateRandomMnemonic() (string, error) {
 		return "", fmt.Errorf("generate mnemonic: %w", err)
 	}
 	return mnemonic, nil
-}
-
-// sidecarPath returns the path of the auto-generated-template sidecar file
-// for a given SQLite db path. The naming is `<db>.template`, e.g.
-// `seed-hunter.db.template`. Empty input returns empty.
-func sidecarPath(dbPath string) string {
-	if dbPath == "" {
-		return ""
-	}
-	return dbPath + ".template"
 }
 
 func hashTemplate(template []string) string {

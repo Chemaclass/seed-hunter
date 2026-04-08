@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,13 +29,48 @@ const (
 )
 
 // SessionSignature uniquely identifies a logical run. Two runs with the same
-// signature are considered the same session for resume purposes.
+// signature are considered the same session for resume purposes. Only the
+// fields below contribute to the lookup; metadata like rate and the
+// plaintext template live on the Session row but do not change identity.
 type SessionSignature struct {
 	TemplateHash string
 	Position     int
 	API          string
 	AddressType  string
 	NAddresses   int
+}
+
+// SessionInit is everything needed to insert (or reuse) a session row. The
+// embedded SessionSignature determines lookup; the other fields are stored
+// alongside so a later "seed-hunter run" can recover them without any flags.
+type SessionInit struct {
+	SessionSignature
+	Template     string  // full plaintext mnemonic, persisted for auto-resume
+	Rate         float64 // requests/sec configured for this run
+	WordlistPath string  // wordlist file path, "" = embedded default
+}
+
+// Session is a row from the sessions table — the full state of one logical
+// run, suitable for hand-off back to the CLI to be resumed.
+type Session struct {
+	ID            int64
+	StartedAtUnix int64
+	EndedAtUnix   int64 // 0 if still running
+	TemplateHash  string
+	Template      string
+	Position      int
+	API           string
+	AddressType   string
+	NAddresses    int
+	Rate          float64
+	WordlistPath  string
+	LastWordIndex int
+	Status        string
+}
+
+// Signature returns the SessionSignature subset of init.
+func (init SessionInit) Signature() SessionSignature {
+	return init.SessionSignature
 }
 
 // Attempt is a single candidate-mnemonic check that the pipeline persists.
@@ -64,19 +100,48 @@ type Repository struct {
 	mu sync.Mutex // serialises writes to avoid SQLITE_BUSY under heavy load
 }
 
-// Open opens (or creates) the SQLite database at path and applies the
-// embedded schema. The returned Repository must be closed by the caller.
+// Open opens (or creates) the SQLite database at path, applies the embedded
+// schema, and runs forward-only migrations to bring older databases up to
+// the current shape. The returned Repository must be closed by the caller.
 func Open(path string) (*Repository, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	db.SetMaxOpenConns(1) // single writer keeps modernc/sqlite happy under contention
-	if _, err := db.ExecContext(context.Background(), schemaSQL); err != nil {
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := ensureSessionColumns(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return &Repository{db: db}, nil
+}
+
+// ensureSessionColumns is a tiny forward-only migration: it tries to ALTER
+// TABLE add each new sessions column, swallowing the "duplicate column"
+// error that SQLite emits when the column is already present. This means
+// fresh installs (where schema.sql created the columns) and upgrades from
+// older databases (where schema.sql ran but the columns were not in the
+// CREATE TABLE) both end up in the same shape.
+func ensureSessionColumns(ctx context.Context, db *sql.DB) error {
+	stmts := []string{
+		`ALTER TABLE sessions ADD COLUMN template TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN rate REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN wordlist_path TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			if strings.Contains(err.Error(), "duplicate column") {
+				continue
+			}
+			return fmt.Errorf("migrate sessions: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close releases the underlying database handle.
@@ -112,12 +177,18 @@ SELECT last_word_index
 	return idx, nil
 }
 
-// BeginSession reuses an existing running/paused session matching sig (so
-// the caller can resume it) or creates a new one. The returned session ID
-// is the row to write checkpoints and attempts against.
-func (r *Repository) BeginSession(ctx context.Context, sig SessionSignature) (int64, error) {
+// BeginSession reuses an existing running/paused session matching
+// init.Signature() (so the caller can resume it) or creates a new one. The
+// returned session ID is the row to write checkpoints and attempts against.
+//
+// On reuse, the row's template/rate/wordlist_path are refreshed in case the
+// caller is restarting with new metadata for the same logical signature
+// (e.g. switching --rate). On insert, all init fields are persisted.
+func (r *Repository) BeginSession(ctx context.Context, init SessionInit) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	sig := init.SessionSignature
 
 	// Reuse the most recent paused/running session for this signature.
 	const reuseQ = `
@@ -132,10 +203,12 @@ SELECT id FROM sessions
 		StatusRunning, StatusPaused,
 	).Scan(&id)
 	if err == nil {
-		// Mark it back to running.
+		// Mark it back to running and refresh the metadata.
 		if _, err := r.db.ExecContext(ctx,
-			`UPDATE sessions SET status = ?, ended_at_unix = NULL WHERE id = ?`,
-			StatusRunning, id,
+			`UPDATE sessions SET status = ?, ended_at_unix = NULL,
+                                  template = ?, rate = ?, wordlist_path = ?
+              WHERE id = ?`,
+			StatusRunning, init.Template, init.Rate, init.WordlistPath, id,
 		); err != nil {
 			return 0, fmt.Errorf("resume session: %w", err)
 		}
@@ -147,11 +220,12 @@ SELECT id FROM sessions
 
 	const insertQ = `
 INSERT INTO sessions
-  (started_at_unix, template_hash, position, api, address_type, n_addresses, status)
-VALUES (?, ?, ?, ?, ?, ?, ?)`
+  (started_at_unix, template_hash, template, position, api, address_type, n_addresses, rate, wordlist_path, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := r.db.ExecContext(ctx, insertQ,
-		time.Now().Unix(), sig.TemplateHash, sig.Position, sig.API,
-		sig.AddressType, sig.NAddresses, StatusRunning,
+		time.Now().Unix(), sig.TemplateHash, init.Template, sig.Position,
+		sig.API, sig.AddressType, sig.NAddresses, init.Rate, init.WordlistPath,
+		StatusRunning,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert session: %w", err)
@@ -161,6 +235,60 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`
 		return 0, fmt.Errorf("session id: %w", err)
 	}
 	return id, nil
+}
+
+// LatestResumable returns the most recent session whose status is paused or
+// running (in practice running rows only exist while a process is alive,
+// but we treat them the same). Returns nil if there is no such session.
+//
+// This is the primitive that powers "seed-hunter run" with no flags: the
+// CLI loads the latest session and reuses its parameters.
+func (r *Repository) LatestResumable(ctx context.Context) (*Session, error) {
+	const q = `
+SELECT id, started_at_unix, COALESCE(ended_at_unix, 0),
+       template_hash, template, position, api, address_type, n_addresses,
+       rate, wordlist_path, last_word_index, status
+  FROM sessions
+ WHERE status IN (?, ?)
+ ORDER BY started_at_unix DESC, id DESC
+ LIMIT 1`
+	var s Session
+	err := r.db.QueryRowContext(ctx, q, StatusRunning, StatusPaused).Scan(
+		&s.ID, &s.StartedAtUnix, &s.EndedAtUnix,
+		&s.TemplateHash, &s.Template, &s.Position, &s.API, &s.AddressType, &s.NAddresses,
+		&s.Rate, &s.WordlistPath, &s.LastWordIndex, &s.Status,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("latest resumable: %w", err)
+	}
+	return &s, nil
+}
+
+// MarkPausedAsCompleted marks any session matching sig that is currently
+// running or paused as completed. It returns the number of rows affected.
+// Used by "run --reset" to retire any in-flight session before starting
+// over with a fresh signature.
+func (r *Repository) MarkPausedAsCompleted(ctx context.Context, sig SessionSignature) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE sessions
+            SET status = ?, ended_at_unix = ?
+          WHERE template_hash = ? AND position = ? AND api = ?
+            AND address_type = ? AND n_addresses = ?
+            AND status IN (?, ?)`,
+		StatusCompleted, time.Now().Unix(),
+		sig.TemplateHash, sig.Position, sig.API, sig.AddressType, sig.NAddresses,
+		StatusRunning, StatusPaused,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("mark paused as completed: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // Checkpoint records that all word indices ≤ wordIndex have been processed

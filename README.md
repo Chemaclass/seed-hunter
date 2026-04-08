@@ -67,47 +67,56 @@ cp .env.example .env
 
 ## Quickstart
 
-The simplest possible run — generate a random demo mnemonic, mutate position 0,
-derive one SegWit address per candidate, and ask `mempool.space` once every
-half-second:
+The simplest possible run — generate a random demo mnemonic and start
+hunting:
 
 ```sh
-./seed-hunter run --position 0 --addresses 1 --rate 2
+./seed-hunter run
 ```
 
-The first thing it prints is the freshly generated demo seed, with a clear
-"do not fund this" notice. Then a live ANSI dashboard repaints in place
+The first thing it prints is the freshly generated demo seed (with a clear
+"do not fund this" notice), then a live ANSI dashboard repaints in place
 showing attempts, rate, ETA for the current position, and — the punchline —
 the ETA in years for the full 2048¹² keyspace at your current throughput.
 
 Press `Ctrl+C` whenever you like. The pipeline drains, flushes the SQLite
-batch, and marks the session **paused**. Run the same command again later
-and `seed-hunter` will resume at the exact word index it left off at:
+batch, and marks the session **paused**. To pick up exactly where you left
+off, run the same command with **no flags at all**:
 
 ```sh
-./seed-hunter run --position 0 --addresses 1 --rate 2   # ← resumes
+./seed-hunter run                # ← resumes the most recent paused session
 ```
 
-### How resume actually works
+That's it. Every parameter (template, position, addresses, api, script type,
+rate, wordlist) is stored in SQLite and read back automatically. You don't
+need to remember or retype anything.
 
-Resume is keyed on a tuple of `(template_hash, position, api, script_type, addresses)`.
-Two `run` invocations with the same tuple resume the same session.
+### Overriding individual parameters on resume
 
-The template is the tricky part: if you don't pass `--template`, `seed-hunter`
-generates a random demo seed for you and **saves it to a sidecar file** at
-`<dbpath>.template` (e.g. `seed-hunter.db.template`, `0600` permissions). The
-next run with no `--template` reads this file and reuses the same mnemonic, so
-resume works without you having to copy-paste anything.
+If you want to resume but change one knob (say, bump the rate), pass just
+that flag:
 
-If you supply your own `--template`, the sidecar file is **not** touched —
-your template is your own to manage.
+```sh
+./seed-hunter run --rate 5       # resumes the same session with rate=5
+```
 
-Whenever a run pauses, `seed-hunter` also prints the **exact** command needed
-to resume the same session, so you have a copy-paste fallback even if you
-delete the sidecar.
+Any flag you pass wins over the stored value; any flag you omit is inherited
+from the last paused session.
 
-`reset --yes` clears the SQLite database and deletes the sidecar so you start
-truly fresh.
+### Starting over
+
+To abandon the current paused session and start fresh, use `--reset`:
+
+```sh
+./seed-hunter run --reset        # generates a new demo seed, new session
+```
+
+`--reset` retires the previous paused session (it stays in the DB as
+`completed` for inspection but is no longer the resume target) and starts
+a brand-new run. You can combine it with explicit flags to control the new
+session's parameters.
+
+### Checking progress and starting clean
 
 When you're done, look at the totals:
 
@@ -136,13 +145,21 @@ seed-hunter reset   [--db PATH] [--yes]
 
 ### `run`
 
-Starts the brute-force loop. The pipeline is `generator → deriver → checker → logger`,
-each stage in its own goroutine, all linked by buffered channels and a shared
-`context.Context` so `Ctrl+C` is always honoured.
+Starts (or resumes) the brute-force loop. The pipeline is
+`generator → deriver → checker → logger`, each stage in its own goroutine,
+all linked by buffered channels and a shared `context.Context` so `Ctrl+C`
+is always honoured.
 
-Resume key: `(template_hash, position, api, address_type, n_addresses)`.
-Two `run` invocations with the same key resume the same session. Pass `--fresh`
-to force a brand-new session even if a paused one exists.
+**With no flags**, `run` reads the most recent paused session from the
+database and resumes it with all of its parameters intact. Any flag you do
+pass overrides the corresponding inherited value.
+
+Pass `--reset` to ignore the last paused session and start a new one. Any
+other flags you pass alongside `--reset` configure the new run; everything
+else uses the package defaults.
+
+The resume key is `(template_hash, position, api, address_type, n_addresses)`.
+Two runs with the same key are considered the same session.
 
 ### `stats`
 
@@ -161,6 +178,13 @@ always win over environment values.
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
+Every flag (except `--reset` and `--no-dashboard`) is **inherited from the
+last paused session** if you don't pass it. The defaults below apply only
+when there is no previous session to inherit from (or when you pass
+`--reset`).
+
+| Flag | Env var | Default | Description |
+|---|---|---|---|
 | `--db` | `SEEDHUNTER_DB` | `./seed-hunter.db` | SQLite database path |
 | `--wordlist` | `SEEDHUNTER_WORDLIST` | _(embedded English)_ | Path to a 2048-word BIP-39 wordlist file |
 | `--template` | `SEEDHUNTER_TEMPLATE` | _(random)_ | 12-word BIP-39 starting mnemonic |
@@ -172,7 +196,7 @@ always win over environment values.
 | `--derive-workers` | — | `0` | Derivation goroutines (`0` = `runtime.NumCPU()`) |
 | `--api-workers` | — | `1` | API goroutines (single worker is plenty at low rates) |
 | `--batch-size` | — | `50` | SQLite insert batch size |
-| `--fresh` | — | `false` | Ignore any paused session for the current signature |
+| `--reset` | — | `false` | Ignore the most recent paused session and start over |
 | `--no-dashboard` | — | `false` | Disable the live dashboard (for non-TTY use) |
 
 ## The math
@@ -277,14 +301,28 @@ Anything else is rejected at startup with a clear error.
 
 ## Privacy
 
-`seed-hunter` **never** stores plaintext mnemonics. The SQLite `attempts`
-table records only a SHA-256 hex fingerprint of each candidate (column
-`mnemonic_hash`). The `sessions.template_hash` column hashes the starting
-template the same way. Inspect the database directly to verify:
+The high-volume `attempts` table **never** stores plaintext mnemonics. Each
+of the 2048 candidate rows records only a SHA-256 hex fingerprint
+(`mnemonic_hash` column). Verify it for yourself:
 
 ```sh
 sqlite3 seed-hunter.db "select id, word_index, mnemonic_hash from attempts limit 5"
 ```
+
+The much smaller `sessions` table **does** store the *one* in-flight
+template in plaintext (column `template`), so that `seed-hunter run` with
+no flags can recover and resume the session automatically. This is the
+single concession we make to keep the resume UX zero-friction. If that's
+not acceptable for your use case:
+
+- Use `--template "..."` explicitly on every run, point `--db` at an
+  in-memory or short-lived path, and never keep the database file around.
+- Or run `./seed-hunter reset --yes` after every session — it truncates
+  both tables and removes the plaintext.
+
+This is, again, an **educational** tool. The plaintext templates it stores
+are auto-generated demo seeds that already get printed to stdout on the
+first run; they were never funded.
 
 ## Contributing
 

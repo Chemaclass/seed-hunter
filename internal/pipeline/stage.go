@@ -60,17 +60,20 @@ func NewStats() *Stats {
 	return s
 }
 
-// Config drives Run. The Template/Position/ScriptType/NAddresses fields
-// match the corresponding CLI flags; API is included only because it is part
-// of the session signature used for resume.
+// Config drives Run. Template/Position/ScriptType/NAddresses/API contribute
+// to the session signature used for resume; Rate and WordlistPath are
+// persisted as session metadata so a later "seed-hunter run" with no flags
+// can recover them.
 type Config struct {
-	Template   []string
-	Position   int
-	ScriptType derivation.ScriptType
-	NAddresses int
-	API        string
-	BatchSize  int  // sqlite insert batch size; defaults to 50 if <= 0
-	Fresh      bool // ignore any paused session for this signature
+	Template     []string
+	Position     int
+	ScriptType   derivation.ScriptType
+	NAddresses   int
+	API          string
+	Rate         float64 // persisted to sessions for resume convenience
+	WordlistPath string  // persisted to sessions for resume convenience
+	BatchSize    int     // sqlite insert batch size; defaults to 50 if <= 0
+	Fresh        bool    // ignore any paused session for this signature
 }
 
 // Dependencies bundles the collaborators Run needs. Tests inject fakes here.

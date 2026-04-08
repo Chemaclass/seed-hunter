@@ -59,12 +59,18 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		AddressType:  string(cfg.ScriptType),
 		NAddresses:   cfg.NAddresses,
 	}
+	init := storage.SessionInit{
+		SessionSignature: sig,
+		Template:         strings.Join(cfg.Template, " "),
+		Rate:             cfg.Rate,
+		WordlistPath:     cfg.WordlistPath,
+	}
 
 	if cfg.Fresh {
-		// Best-effort: drop any paused session for this signature so the
-		// caller starts at index 0. We do this by force-completing it; the
-		// resume query then ignores it.
-		if err := completePausedForSignature(ctx, deps.Repository, sig); err != nil {
+		// Best-effort: retire any paused/running session for this signature so
+		// the caller starts at index 0. The MarkPausedAsCompleted helper does
+		// this in a single statement.
+		if _, err := deps.Repository.MarkPausedAsCompleted(ctx, sig); err != nil {
 			return Result{}, fmt.Errorf("pipeline: clear paused session: %w", err)
 		}
 	}
@@ -78,7 +84,7 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 
 	if startIdx >= wordlistSize {
 		// Nothing to do — already complete.
-		sessionID, err := deps.Repository.BeginSession(ctx, sig)
+		sessionID, err := deps.Repository.BeginSession(ctx, init)
 		if err != nil {
 			return Result{}, fmt.Errorf("pipeline: begin session: %w", err)
 		}
@@ -94,7 +100,7 @@ func Run(ctx context.Context, cfg Config, deps Dependencies, stats *Stats) (Resu
 		}, nil
 	}
 
-	sessionID, err := deps.Repository.BeginSession(ctx, sig)
+	sessionID, err := deps.Repository.BeginSession(ctx, init)
 	if err != nil {
 		return Result{}, fmt.Errorf("pipeline: begin session: %w", err)
 	}
@@ -397,26 +403,4 @@ func toAttempt(sessionID int64, c Checked) storage.Attempt {
 func hashTemplate(template []string) string {
 	h := sha256.Sum256([]byte(strings.Join(template, " ")))
 	return hex.EncodeToString(h[:])
-}
-
-// completePausedForSignature force-marks any paused/running session for the
-// given signature as completed so that --fresh starts a new session.
-func completePausedForSignature(ctx context.Context, repo *storage.Repository, sig storage.SessionSignature) error {
-	for {
-		idx, err := repo.Resume(ctx, sig)
-		if err != nil {
-			return err
-		}
-		if idx < 0 {
-			return nil
-		}
-		// Begin will reuse the existing paused session; immediately end it.
-		id, err := repo.BeginSession(ctx, sig)
-		if err != nil {
-			return err
-		}
-		if err := repo.EndSession(ctx, id, storage.StatusCompleted); err != nil {
-			return err
-		}
-	}
 }

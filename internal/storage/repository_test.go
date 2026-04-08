@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Chemaclass/seed-hunter/internal/storage"
 )
@@ -30,6 +31,13 @@ func newSig(template string) storage.SessionSignature {
 	}
 }
 
+// initFor wraps a signature in a minimal SessionInit so legacy tests that
+// only care about the signature (not the persisted template/rate) stay
+// terse. New tests that exercise the persistence build their own SessionInit.
+func initFor(sig storage.SessionSignature) storage.SessionInit {
+	return storage.SessionInit{SessionSignature: sig}
+}
+
 func TestResumeReturnsMinusOneForBrandNewSignature(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
@@ -48,7 +56,7 @@ func TestBeginSessionAndCheckpointPersistProgress(t *testing.T) {
 	ctx := context.Background()
 	sig := newSig("template-b")
 
-	sessionID, err := repo.BeginSession(ctx, sig)
+	sessionID, err := repo.BeginSession(ctx, initFor(sig))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -74,7 +82,7 @@ func TestEndSessionPausedThenResumeFindsIt(t *testing.T) {
 	ctx := context.Background()
 	sig := newSig("template-c")
 
-	sessionID, err := repo.BeginSession(ctx, sig)
+	sessionID, err := repo.BeginSession(ctx, initFor(sig))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -99,7 +107,7 @@ func TestEndSessionCompletedIsNotResumed(t *testing.T) {
 	ctx := context.Background()
 	sig := newSig("template-d")
 
-	sessionID, err := repo.BeginSession(ctx, sig)
+	sessionID, err := repo.BeginSession(ctx, initFor(sig))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -124,7 +132,7 @@ func TestInsertAttemptsAndStatsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	sig := newSig("template-e")
 
-	sessionID, err := repo.BeginSession(ctx, sig)
+	sessionID, err := repo.BeginSession(ctx, initFor(sig))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -157,7 +165,7 @@ func TestResetClearsAllSessionsAndAttempts(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
-	sessionID, err := repo.BeginSession(ctx, newSig("template-f"))
+	sessionID, err := repo.BeginSession(ctx, initFor(newSig("template-f")))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -184,7 +192,7 @@ func TestConcurrentInsertsDoNotDeadlock(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
 
-	sessionID, err := repo.BeginSession(ctx, newSig("template-g"))
+	sessionID, err := repo.BeginSession(ctx, initFor(newSig("template-g")))
 	if err != nil {
 		t.Fatalf("BeginSession: %v", err)
 	}
@@ -227,5 +235,174 @@ func TestConcurrentInsertsDoNotDeadlock(t *testing.T) {
 	}
 	if stats.Total != goroutines*batchSize {
 		t.Errorf("Total: want %d, got %d", goroutines*batchSize, stats.Total)
+	}
+}
+
+func TestLatestResumableReturnsNilWhenEmpty(t *testing.T) {
+	repo := newTestRepo(t)
+	got, err := repo.LatestResumable(context.Background())
+	if err != nil {
+		t.Fatalf("LatestResumable: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for empty db, got %+v", got)
+	}
+}
+
+func TestLatestResumablePersistsAndReturnsFullSessionMetadata(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	init := storage.SessionInit{
+		SessionSignature: storage.SessionSignature{
+			TemplateHash: "deadbeef",
+			Position:     5,
+			API:          "blockstream",
+			AddressType:  "legacy",
+			NAddresses:   2,
+		},
+		Template:     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+		Rate:         3.5,
+		WordlistPath: "/some/spanish.txt",
+	}
+	id, err := repo.BeginSession(ctx, init)
+	if err != nil {
+		t.Fatalf("BeginSession: %v", err)
+	}
+	if err := repo.Checkpoint(ctx, id, 137); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	if err := repo.EndSession(ctx, id, storage.StatusPaused); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+
+	got, err := repo.LatestResumable(ctx)
+	if err != nil {
+		t.Fatalf("LatestResumable: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a session, got nil")
+	}
+	if got.ID != id {
+		t.Errorf("ID: want %d, got %d", id, got.ID)
+	}
+	if got.Template != init.Template {
+		t.Errorf("Template: want %q, got %q", init.Template, got.Template)
+	}
+	if got.Position != 5 {
+		t.Errorf("Position: want 5, got %d", got.Position)
+	}
+	if got.API != "blockstream" {
+		t.Errorf("API: want blockstream, got %s", got.API)
+	}
+	if got.AddressType != "legacy" {
+		t.Errorf("AddressType: want legacy, got %s", got.AddressType)
+	}
+	if got.NAddresses != 2 {
+		t.Errorf("NAddresses: want 2, got %d", got.NAddresses)
+	}
+	if got.Rate != 3.5 {
+		t.Errorf("Rate: want 3.5, got %g", got.Rate)
+	}
+	if got.WordlistPath != "/some/spanish.txt" {
+		t.Errorf("WordlistPath: want /some/spanish.txt, got %s", got.WordlistPath)
+	}
+	if got.LastWordIndex != 137 {
+		t.Errorf("LastWordIndex: want 137, got %d", got.LastWordIndex)
+	}
+	if got.Status != storage.StatusPaused {
+		t.Errorf("Status: want paused, got %s", got.Status)
+	}
+}
+
+func TestLatestResumablePicksTheMostRecentPausedSession(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+
+	mkInit := func(hash string) storage.SessionInit {
+		return storage.SessionInit{
+			SessionSignature: storage.SessionSignature{
+				TemplateHash: hash,
+				Position:     0,
+				API:          "mempool",
+				AddressType:  "segwit",
+				NAddresses:   1,
+			},
+			Template: hash,
+		}
+	}
+
+	older, err := repo.BeginSession(ctx, mkInit("older-hash"))
+	if err != nil {
+		t.Fatalf("BeginSession older: %v", err)
+	}
+	if err := repo.EndSession(ctx, older, storage.StatusPaused); err != nil {
+		t.Fatalf("EndSession older: %v", err)
+	}
+	// Sleep one second so started_at_unix is strictly greater for the next.
+	time.Sleep(1100 * time.Millisecond)
+	newer, err := repo.BeginSession(ctx, mkInit("newer-hash"))
+	if err != nil {
+		t.Fatalf("BeginSession newer: %v", err)
+	}
+	if err := repo.EndSession(ctx, newer, storage.StatusPaused); err != nil {
+		t.Fatalf("EndSession newer: %v", err)
+	}
+
+	got, err := repo.LatestResumable(ctx)
+	if err != nil {
+		t.Fatalf("LatestResumable: %v", err)
+	}
+	if got == nil || got.ID != newer {
+		t.Errorf("expected newer session id %d, got %+v", newer, got)
+	}
+}
+
+func TestLatestResumableSkipsCompletedSessions(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	id, err := repo.BeginSession(ctx, initFor(newSig("done-hash")))
+	if err != nil {
+		t.Fatalf("BeginSession: %v", err)
+	}
+	if err := repo.EndSession(ctx, id, storage.StatusCompleted); err != nil {
+		t.Fatalf("EndSession completed: %v", err)
+	}
+	got, err := repo.LatestResumable(ctx)
+	if err != nil {
+		t.Fatalf("LatestResumable: %v", err)
+	}
+	if got != nil {
+		t.Errorf("completed session must not be returned: %+v", got)
+	}
+}
+
+func TestMarkPausedAsCompletedRetiresMatchingSessions(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	sig := newSig("retire-hash")
+	id, err := repo.BeginSession(ctx, initFor(sig))
+	if err != nil {
+		t.Fatalf("BeginSession: %v", err)
+	}
+	if err := repo.EndSession(ctx, id, storage.StatusPaused); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+
+	n, err := repo.MarkPausedAsCompleted(ctx, sig)
+	if err != nil {
+		t.Fatalf("MarkPausedAsCompleted: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rows affected: want 1, got %d", n)
+	}
+
+	// Resume() must now return -1 because the session is completed.
+	resumeIdx, err := repo.Resume(ctx, sig)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if resumeIdx != -1 {
+		t.Errorf("expected -1 after MarkPausedAsCompleted, got %d", resumeIdx)
 	}
 }

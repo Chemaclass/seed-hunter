@@ -39,7 +39,7 @@ type Config struct {
 	DeriveWorkers int
 	APIWorkers    int
 	BatchSize     int
-	Fresh         bool
+	Reset         bool // ignore the most-recent paused session and start fresh
 	NoDashboard   bool
 }
 
