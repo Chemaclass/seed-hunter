@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`release.sh`** — one-command release automation. Validates the
+  environment, runs tests, rewrites `CHANGELOG.md` (moves `[Unreleased]`
+  → new version, updates reference links), commits the bump, builds
+  cross-platform binaries via `make release`, generates `SHA256SUMS`,
+  tags, pushes, and creates the GitHub release with binaries attached
+  and the extracted changelog section as the release notes. Supports
+  `--dry-run`, `--no-tests`, and `--yes` for non-interactive use. On
+  failure between commit and push, automatically rolls back the local
+  commit and tag so the working tree is restored.
+
 ## [0.1.0] - 2026-04-08
 
 The first stable release of `seed-hunter` — an educational Go CLI that

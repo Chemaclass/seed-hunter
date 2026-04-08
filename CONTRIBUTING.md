@@ -109,6 +109,37 @@ small. To add one:
 4. Document the new provider in the README's `--api` table and in this file.
 5. Bonus: add a `--rate` recommendation in the README based on the provider's published limits.
 
+## Cutting a release
+
+The whole release ritual is automated by [`./release.sh`](release.sh). It
+takes a version number, validates the working tree, runs the tests,
+rewrites `CHANGELOG.md`, builds cross-platform binaries, generates
+checksums, tags, pushes, and creates the GitHub release with the binaries
+and the extracted changelog section as the release notes.
+
+```sh
+# 1. Add release notes under [Unreleased] in CHANGELOG.md and commit them.
+#    (Either as part of your normal feature commits, or as a dedicated
+#    "docs: changelog" commit before running the script.)
+
+# 2. Try a dry run first to see exactly what the script would do:
+./release.sh 0.2.0 --dry-run
+
+# 3. Cut the release for real:
+./release.sh 0.2.0
+```
+
+Useful flags:
+
+- `--dry-run` — print every step but commit/tag/push/release nothing.
+- `--no-tests` — skip the local `make test` smoke check (faster, riskier).
+- `--yes` / `-y` — skip the confirmation prompt (for CI / scripts).
+
+The script refuses to run if the tree is dirty, you're not on `main`,
+the tag already exists, or `[Unreleased]` is empty. If anything fails
+between the local commit and the push, it automatically rolls back the
+commit and the local tag.
+
 ## Reporting security issues
 
 If you find a **security** issue (e.g. accidental plaintext leak of a
