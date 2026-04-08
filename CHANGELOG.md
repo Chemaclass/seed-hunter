@@ -41,6 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   128-bit secure but the 3Blue1Brown video's 2²⁵⁶ argument applies *a
   fortiori*. The README's "Why" section now correctly distinguishes
   between the 132-bit search space and the 128 bits of real entropy.
+- **README and `docs/`** rewritten end-to-end to drop AI-style prose:
+  fewer em-dashes, no "viscerally / a fortiori / absurd squared", no
+  fake quotes, no rhetorical scaffolding ("the entire point is...",
+  "you are watching it not happen"). Headers are descriptive rather
+  than stylized. Block quotes hold principles, not punchlines. Numbers
+  and references over flowery metaphors.
 
 ## [0.1.0] - 2026-04-08
 

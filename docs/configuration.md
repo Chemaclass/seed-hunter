@@ -17,7 +17,7 @@ nothing to inherit and nothing in the environment either.
 | `--addresses`    | —                        | `1`                   | Receiving addresses to derive per candidate                                              |
 | `--api`          | `SEEDHUNTER_API`         | `mempool`             | `mempool` or `blockstream`                                                               |
 | `--script-type`  | `SEEDHUNTER_SCRIPT_TYPE` | `segwit`              | `segwit` (BIP-84, `bc1...`) or `legacy` (BIP-44, `1...`)                                 |
-| `--rate`         | —                        | `2`                   | API requests per second (be polite!)                                                     |
+| `--rate`         | —                        | `2`                   | API requests per second. Be polite to public block-explorer APIs.                        |
 | `--workers`      | —                        | `2`                   | Parallel deriver goroutines (≥ 1, see [performance](performance.md))                     |
 | `--api-workers`  | —                        | `1`                   | Reserved; the rate limiter currently serializes upstream calls                           |
 | `--batch-size`   | —                        | `50`                  | SQLite insert batch size                                                                 |
@@ -47,7 +47,7 @@ When you run `seed-hunter run` with no flags, the tool:
 
 1. Opens the SQLite database at `--db`.
 2. Reads the most recent session whose status is `paused` or `running`.
-3. **Inherits every persisted parameter** from that session — template,
+3. **Inherits every persisted parameter** from that session: template,
    positions, addresses, api, script type, rate, wordlist path, workers,
    and the in-flight cursor (in walk mode).
 4. Uses any flag you DID pass on the command line to override the

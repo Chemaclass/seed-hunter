@@ -36,21 +36,22 @@ correct under any `--workers` value.
 
 After the sweep phase finishes (or if you pass `--skip-sweep`), the same
 process transitions into the keyspace walker. The walker is single-
-goroutine — the rate limiter dominates the cost so parallelism doesn't
-help — and it iterates a 12-element `Cursor` like a base-2048 odometer:
+goroutine. The rate limiter dominates the cost so parallelism doesn't
+help. It iterates a 12-element `Cursor` like a base-2048 odometer:
 
 ```
 [generator: walker.Inc()] ─▶ [deriver] ─▶ [checker] ─▶ [logger + cursor checkpoint]
 ```
 
 The cursor is persisted to the `sessions.cursor` column as a
-comma-separated string after every batch flush, so the next
+comma-separated string after every batch flush. The next
 `seed-hunter run` (no flags) reads it back and continues from exactly
-where you stopped — same template, same parameters, same cursor.
+where you stopped: same template, same parameters, same cursor.
 
-Position 11 advances every iteration; position 10 every 2048; position 9
-every 2048²; …; position 0 every 2048¹¹ ≈ 2.4 × 10³⁶ iterations. You will
-not observe position 0 advance even once.
+Position 11 advances every iteration. Position 10 every 2048
+iterations. Position 9 every 2048². Position 0 every `2048¹¹`
+≈ `2.4 × 10³⁶` iterations. You will not observe position 0 advance
+even once.
 
 ## Packages
 
@@ -76,8 +77,8 @@ calls in `storage.Open`.
 
 The `attempts` table records every candidate's SHA-256 fingerprint, the
 derived addresses (JSON), the balance, the duration, and the checked-at
-timestamp. It is **never** queried by the runtime — it exists for `stats`
-and for after-the-fact inspection with `sqlite3`.
+timestamp. The runtime never queries it. It exists for `stats` and for
+after-the-fact inspection with `sqlite3`.
 
 ## Cancellation and shutdown
 
@@ -88,5 +89,5 @@ that even a cancelled run still persists its in-flight batch and
 checkpoint before the process exits.
 
 The session is marked `paused` on cancel and `completed` on natural
-exhaustion (full position sweep, or — in the impossible case — full
-keyspace walk).
+exhaustion. "Natural exhaustion" means the full 12-position sweep, or,
+in the impossible case, the full keyspace walk.

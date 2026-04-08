@@ -5,11 +5,11 @@ from a hard-coded library.
 
 ## Default: embedded English
 
-By default `seed-hunter` uses the canonical English BIP-39 wordlist that
-ships **embedded** in the binary at build time
-(`internal/wordlist/english.txt`, byte-for-byte identical to
+By default `seed-hunter` uses the canonical English BIP-39 wordlist
+embedded in the binary at build time (`internal/wordlist/english.txt`,
+byte-for-byte identical to
 [bitcoin/bips/bip-0039/english.txt](https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt)).
-No file lookup is needed for the default; the binary works on a system
+No file lookup is needed for the default. The binary works on a system
 that doesn't have any wordlist files at all.
 
 ## Using a different language
@@ -25,16 +25,16 @@ curl -fsSL https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/spanis
 
 When you supply `--wordlist`, `seed-hunter` also rebinds the underlying
 BIP-39 library so that checksum validation and PBKDF2 seed derivation use
-the same words — the iterator and the deriver are always in sync. The
-file must contain exactly **2048 unique non-empty lines** (UTF-8, one
-word per line). Anything else is rejected at startup with a clear error.
+the same words. The iterator and the deriver are always in sync. The
+file must contain exactly 2048 unique non-empty lines (UTF-8, one word
+per line). Anything else is rejected at startup with a clear error.
 
 ## Custom (non-BIP-39) wordlists
 
-A custom wordlist that is not one of the 9 official BIP-39 lists will
-still load, but **every candidate will fail the BIP-39 checksum** and no
-mnemonic will reach the balance check. That's only useful as a "show me
-how the iterator walks 2048 candidates" demo.
+A custom wordlist that isn't one of the 9 official BIP-39 lists will
+still load, but every candidate will fail the BIP-39 checksum and no
+mnemonic will reach the balance check. Useful only as a "show me how
+the iterator walks 2048 candidates" demo.
 
 ## Persistence
 
